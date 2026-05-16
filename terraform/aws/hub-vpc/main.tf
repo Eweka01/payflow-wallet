@@ -40,6 +40,7 @@ resource "aws_internet_gateway" "hub" {
 
 # Public Subnet for Bastion
 resource "aws_subnet" "hub_public" {
+  # checkov:skip=CKV_AWS_130:Public subnet requires map_public_ip_on_launch for bastion host and NAT gateway functionality
   vpc_id                  = aws_vpc.hub.id
   cidr_block              = var.hub_public_subnet_cidr
   availability_zone        = data.aws_availability_zones.available.names[0]

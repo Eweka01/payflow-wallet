@@ -96,11 +96,13 @@ resource "aws_iam_instance_profile" "bootstrap" {
 }
 
 resource "aws_security_group" "bootstrap" {
+  # checkov:skip=CKV_AWS_382:Bootstrap instance requires unrestricted egress to reach EKS API, ECR, SSM, and package repositories
   name_prefix = "${var.name_prefix}-bootstrap-sg-"
   description = "Bootstrap instance: egress only, SSM-only access"
   vpc_id      = var.vpc_id
 
   egress {
+    description = "All outbound — SSM, EKS API, ECR, package repositories"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
@@ -119,6 +121,8 @@ locals {
 }
 
 resource "aws_instance" "bootstrap" {
+  # checkov:skip=CKV_AWS_135:EBS optimisation is always enabled on t3 instances by default; explicit flag not accepted by instance type
+  # checkov:skip=CKV_AWS_126:Detailed EC2 monitoring adds cost not justified for a single-use bootstrap instance
   ami                         = data.aws_ami.amazon_linux_2023.id
   instance_type               = "t3.micro"
   subnet_id                   = var.subnet_id

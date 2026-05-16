@@ -48,6 +48,7 @@ resource "aws_vpc" "eks" {
 
 # Public Subnets for NAT Gateway and ALB (across multiple AZs)
 resource "aws_subnet" "eks_public" {
+  # checkov:skip=CKV_AWS_130:Public subnets require map_public_ip_on_launch for NAT Gateway and ALB Ingress Controller functionality
   count = length(var.availability_zones)
 
   vpc_id                  = aws_vpc.eks.id

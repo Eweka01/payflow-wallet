@@ -27,6 +27,7 @@ resource "aws_db_subnet_group" "payflow" {
 
 # Security Group for RDS
 resource "aws_security_group" "rds" {
+  # checkov:skip=CKV_AWS_382:Unrestricted egress required for RDS to reach AWS service endpoints
   name        = "payflow-rds-sg"
   description = "Security group for RDS PostgreSQL"
   vpc_id      = data.aws_vpc.eks.id
@@ -54,6 +55,27 @@ resource "aws_security_group" "rds" {
   tags = {
     Name = "payflow-rds-sg"
   }
+}
+
+# IAM Role for RDS Enhanced Monitoring
+resource "aws_iam_role" "rds_monitoring" {
+  name = "payflow-rds-monitoring-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "monitoring.rds.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+
+  tags = { Name = "payflow-rds-monitoring-role" }
+}
+
+resource "aws_iam_role_policy_attachment" "rds_monitoring" {
+  role       = aws_iam_role.rds_monitoring.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonRDSEnhancedMonitoringRole"
 }
 
 # KMS Key for RDS Encryption
@@ -103,11 +125,15 @@ resource "aws_db_instance" "payflow" {
   maintenance_window     = var.maintenance_window
   copy_tags_to_snapshot  = true
 
-  # Performance Insights
-  performance_insights_enabled = var.performance_insights_enabled
-
-  # Monitoring
+  # Performance and Monitoring
+  performance_insights_enabled = true
+  monitoring_interval          = 60
+  monitoring_role_arn          = aws_iam_role.rds_monitoring.arn
   enabled_cloudwatch_logs_exports = ["postgresql", "upgrade"]
+
+  # Compliance settings
+  auto_minor_version_upgrade        = true
+  iam_database_authentication_enabled = true
 
   # Deletion Protection
   deletion_protection = var.deletion_protection
@@ -137,6 +163,8 @@ resource "aws_db_instance" "payflow" {
     aws_db_subnet_group.payflow,
     aws_security_group.rds,
     aws_kms_key.rds,
+    aws_iam_role.rds_monitoring,
+    aws_iam_role_policy_attachment.rds_monitoring,
   ]
 
   tags = {

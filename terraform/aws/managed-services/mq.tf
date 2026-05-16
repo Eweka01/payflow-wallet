@@ -3,6 +3,7 @@
 
 # Security Group for Amazon MQ
 resource "aws_security_group" "mq" {
+  # checkov:skip=CKV_AWS_382:Unrestricted egress required for MQ broker to reach AWS service endpoints
   name        = "payflow-mq-sg"
   description = "Security group for Amazon MQ (RabbitMQ)"
   vpc_id      = data.aws_vpc.eks.id

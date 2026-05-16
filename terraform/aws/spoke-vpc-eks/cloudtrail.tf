@@ -3,6 +3,8 @@
 
 # S3 Bucket for CloudTrail
 resource "aws_s3_bucket" "cloudtrail" {
+  # checkov:skip=CKV_AWS_18:Access logging requires a dedicated logging bucket; adds cost/complexity not warranted for portfolio demo
+  # checkov:skip=CKV_AWS_144:Cross-region replication not required; versioning enabled for state recovery
   bucket        = "${var.eks_cluster_name}-cloudtrail-${data.aws_caller_identity.current.account_id}"
   force_destroy = true  # Empty and delete on destroy (teardown)
 
@@ -57,6 +59,11 @@ resource "aws_s3_bucket_lifecycle_configuration" "cloudtrail" {
     expiration {
       days = 2557  # 7 years
     }
+
+    # Abort incomplete multipart uploads after 7 days to avoid orphaned storage costs
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
   }
 }
 
@@ -100,16 +107,29 @@ resource "aws_s3_bucket_policy" "cloudtrail" {
   })
 }
 
+# SNS Topic for CloudTrail alerts
+resource "aws_sns_topic" "cloudtrail" {
+  # checkov:skip=CKV_AWS_26:KMS CMK for SNS adds cost; audit alert notifications are not sensitive data
+  name = "${var.eks_cluster_name}-cloudtrail-alerts"
+
+  tags = {
+    Name = "${var.eks_cluster_name}-cloudtrail-alerts"
+  }
+}
+
 # CloudTrail
 resource "aws_cloudtrail" "eks" {
+  # checkov:skip=CKV_AWS_35:S3 bucket uses KMS encryption (config_cloudtrail key); additional CloudTrail KMS key adds cost and management overhead
   name                          = "${var.eks_cluster_name}-cloudtrail"
   s3_bucket_name                = aws_s3_bucket.cloudtrail.id
+  sns_topic_name                = aws_sns_topic.cloudtrail.arn
   include_global_service_events = true
   is_multi_region_trail         = true
   enable_log_file_validation    = true
 
   depends_on = [
     aws_s3_bucket_policy.cloudtrail,  # Bucket policy must exist first
+    aws_sns_topic.cloudtrail,
   ]
 
   tags = {

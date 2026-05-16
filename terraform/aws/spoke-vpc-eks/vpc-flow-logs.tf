@@ -51,6 +51,7 @@ resource "aws_iam_role_policy" "flow_logs" {
 
 # CloudWatch Log Group for VPC Flow Logs (name includes workspace to avoid conflicts)
 resource "aws_cloudwatch_log_group" "flow_logs" {
+  # checkov:skip=CKV_AWS_158:KMS CMK for CW log groups adds cost; CloudWatch service-side encryption is sufficient for portfolio demo
   name              = "/aws/vpc-flow-logs/${var.eks_cluster_name}-${terraform.workspace}"
   retention_in_days  = 365  # 1 year minimum for fintech compliance
 

@@ -164,6 +164,7 @@ resource "aws_wafv2_web_acl" "payflow" {
 
 # CloudWatch Log Group for WAF (name must start with aws-waf-logs- per AWS WAFv2)
 resource "aws_cloudwatch_log_group" "waf" {
+  # checkov:skip=CKV_AWS_158:KMS CMK for CW log groups adds cost; CloudWatch service-side encryption is sufficient for portfolio demo
   name              = "aws-waf-logs-${var.eks_cluster_name}"
   retention_in_days = 365  # 1 year retention
 

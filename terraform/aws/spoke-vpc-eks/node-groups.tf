@@ -60,11 +60,13 @@ resource "time_sleep" "wait_for_node_iam" {
 # Explicit node security group (deterministic wiring for private endpoint cluster)
 # Avoids reliance on EKS auto-wiring which can fail during node group provisioning.
 resource "aws_security_group" "eks_nodes" {
+  # checkov:skip=CKV_AWS_382:EKS nodes require unrestricted egress to reach ECR, S3, Secrets Manager, and AWS APIs via VPC endpoints or internet
   name_prefix = "${local.name_prefix}-nodes-sg-"
   description = "Security group for EKS worker nodes (explicit control plane reachability)"
   vpc_id      = aws_vpc.eks.id
 
   egress {
+    description = "All outbound — nodes need ECR, S3, Secrets Manager, AWS APIs"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
@@ -111,6 +113,12 @@ resource "aws_launch_template" "eks_nodes" {
     aws_security_group.eks_nodes.id,
     aws_eks_cluster.payflow.vpc_config[0].cluster_security_group_id,
   ]
+
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"  # IMDSv2 enforced — prevents SSRF-based credential theft
+    http_put_response_hop_limit = 2           # 2 required for containerised workloads on EKS
+  }
 
   tags = merge(local.common_tags, {
     Name      = "${local.name_prefix}-nodes-lt"

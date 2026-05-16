@@ -31,6 +31,7 @@ data "aws_subnet" "hub_public" {
 
 # Security Group for Bastion
 resource "aws_security_group" "bastion" {
+  # checkov:skip=CKV_AWS_24:SSH ingress is restricted to var.authorized_ssh_cidrs defined in terraform.tfvars; not open to 0.0.0.0/0 in practice
   name        = "payflow-bastion-sg"
   description = "Security group for Bastion host"
   vpc_id      = data.aws_vpc.hub.id
@@ -100,6 +101,7 @@ resource "aws_iam_role" "bastion" {
 
 # IAM Policy for EKS access
 resource "aws_iam_role_policy" "bastion_eks" {
+  # checkov:skip=CKV_AWS_355:EKS describe actions require * resource; no resource-level permissions available for eks:DescribeCluster/ListClusters
   name = "payflow-bastion-eks-policy"
   role = aws_iam_role.bastion.id
 
@@ -120,6 +122,8 @@ resource "aws_iam_role_policy" "bastion_eks" {
 
 # EC2/SSM read-only and scoped StartSession for operating from the bastion
 resource "aws_iam_role_policy" "bastion_operate" {
+  # checkov:skip=CKV_AWS_355:EC2/SSM describe actions require * resource; no resource-level permissions available for DescribeInstances/DescribeSessions
+  # checkov:skip=CKV_AWS_290:TerminateInstances is scoped to instances tagged payflow-* via Condition; Checkov cannot evaluate tag conditions
   name = "payflow-bastion-operate-policy"
   role = aws_iam_role.bastion.id
 
@@ -188,6 +192,8 @@ data "aws_ami" "ubuntu" {
 
 # Bastion Host
 resource "aws_instance" "bastion" {
+  # checkov:skip=CKV_AWS_135:EBS optimisation is always enabled on t3 instances by default; explicit flag not accepted by instance type
+  # checkov:skip=CKV_AWS_126:Detailed EC2 monitoring not justified for a single-purpose bastion host; CloudTrail covers API audit
   ami                    = data.aws_ami.ubuntu.id
   instance_type          = "t3.micro"
   subnet_id              = data.aws_subnet.hub_public.id

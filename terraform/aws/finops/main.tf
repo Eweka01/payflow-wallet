@@ -158,6 +158,7 @@ resource "aws_ce_anomaly_subscription" "account" {
 # ---------------------------------------------------------------------------
 
 resource "aws_sns_topic" "billing_alarm" {
+  # checkov:skip=CKV_AWS_26:KMS CMK for SNS adds cost; billing alarm notifications are non-sensitive operational data
   name = "payflow-billing-alarm"
 
   tags = merge(local.common_tags, {

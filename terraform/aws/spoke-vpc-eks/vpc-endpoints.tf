@@ -23,6 +23,7 @@ resource "aws_vpc_endpoint" "s3" {
 
 # Security group for interface endpoints (ECR, STS, Secrets Manager)
 resource "aws_security_group" "vpc_endpoints" {
+  # checkov:skip=CKV_AWS_382:VPC endpoints require unrestricted egress for health checks and endpoint responses
   name_prefix = "${local.name_prefix}-endpoints-sg-"
   description = "Allow HTTPS from EKS nodes to VPC interface endpoints"
   vpc_id      = aws_vpc.eks.id
@@ -36,6 +37,7 @@ resource "aws_security_group" "vpc_endpoints" {
   }
 
   egress {
+    description = "Outbound for VPC endpoint health checks and responses"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"

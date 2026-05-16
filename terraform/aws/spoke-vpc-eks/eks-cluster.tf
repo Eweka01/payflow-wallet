@@ -115,6 +115,7 @@ resource "aws_eks_cluster" "payflow" {
 
 # CloudWatch Log Group for EKS
 resource "aws_cloudwatch_log_group" "eks_cluster" {
+  # checkov:skip=CKV_AWS_158:KMS CMK for CW log groups adds cost; CloudWatch service-side encryption is sufficient for portfolio demo
   name              = "/aws/eks/${var.eks_cluster_name}/cluster"
   retention_in_days = 365  # 1 year minimum for fintech compliance
 

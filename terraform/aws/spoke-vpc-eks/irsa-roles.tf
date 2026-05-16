@@ -73,6 +73,9 @@ resource "aws_iam_role" "alb_controller_irsa" {
 
 # ALB Controller Policy
 resource "aws_iam_role_policy" "alb_controller" {
+  # checkov:skip=CKV_AWS_355:ALB controller requires * resource for describe/list actions per AWS official IAM policy
+  # checkov:skip=CKV_AWS_289:ALB controller manages target group bindings and security groups as part of its control-plane role
+  # checkov:skip=CKV_AWS_290:ALB controller write access required to create/modify load balancers; scoped by cluster tag conditions
   name = "${var.eks_cluster_name}-alb-controller-policy"
   role = aws_iam_role.alb_controller_irsa.id
 
@@ -341,6 +344,7 @@ resource "aws_iam_role" "external_dns_irsa" {
 
 # External DNS Policy
 resource "aws_iam_role_policy" "external_dns" {
+  # checkov:skip=CKV_AWS_355:Route53 list/describe actions require * resource; no resource-level permissions available
   name = "${var.eks_cluster_name}-external-dns-policy"
   role = aws_iam_role.external_dns_irsa.id
 
@@ -437,6 +441,8 @@ resource "aws_iam_role" "cluster_autoscaler_irsa" {
 
 # Cluster Autoscaler IAM Policy
 resource "aws_iam_role_policy" "cluster_autoscaler" {
+  # checkov:skip=CKV_AWS_355:Autoscaler describe/list actions require * resource per AWS official IAM policy
+  # checkov:skip=CKV_AWS_290:Autoscaler write access required to scale node groups; no resource-level perms available
   name = "cluster-autoscaler-policy"
   role = aws_iam_role.cluster_autoscaler_irsa.id
 

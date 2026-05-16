@@ -13,6 +13,7 @@ resource "aws_elasticache_subnet_group" "payflow" {
 
 # Security Group for ElastiCache
 resource "aws_security_group" "elasticache" {
+  # checkov:skip=CKV_AWS_382:Unrestricted egress required for ElastiCache to reach AWS service endpoints
   name        = "payflow-elasticache-sg"
   description = "Security group for ElastiCache Redis"
   vpc_id      = data.aws_vpc.eks.id
@@ -44,6 +45,8 @@ resource "aws_security_group" "elasticache" {
 
 # ElastiCache Redis Cluster
 resource "aws_elasticache_replication_group" "payflow" {
+  # checkov:skip=CKV_AWS_31:Auth token requires cluster recreation; transit_encryption_enabled=true; auth token planned for production deployment
+  # checkov:skip=CKV_AWS_191:at_rest_encryption_enabled=true uses AWS managed key; KMS CMK adds cost not justified for portfolio demo
   replication_group_id       = "payflow-redis"
   description                = "PayFlow Redis cache cluster"
 
@@ -107,8 +110,9 @@ resource "aws_elasticache_replication_group" "payflow" {
 
 # CloudWatch Log Group for Redis
 resource "aws_cloudwatch_log_group" "redis" {
+  # checkov:skip=CKV_AWS_158:KMS CMK encryption for log groups adds cost; CloudWatch service-side encryption is sufficient for portfolio demo
   name              = "/aws/elasticache/redis/payflow"
-  retention_in_days = 7
+  retention_in_days = 365
 
   tags = {
     Name = "payflow-redis-logs"

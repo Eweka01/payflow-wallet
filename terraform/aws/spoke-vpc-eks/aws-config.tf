@@ -48,6 +48,8 @@ resource "aws_kms_alias" "config_cloudtrail" {
 
 # S3 Bucket for Config
 resource "aws_s3_bucket" "config" {
+  # checkov:skip=CKV_AWS_18:Access logging requires a dedicated logging bucket; adds cost/complexity not warranted for portfolio demo
+  # checkov:skip=CKV_AWS_144:Cross-region replication not required; versioning provides recovery capability
   bucket        = "${var.eks_cluster_name}-config-${data.aws_caller_identity.current.account_id}"
   force_destroy = true  # Empty and delete on destroy (teardown)
 
