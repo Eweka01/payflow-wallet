@@ -40,8 +40,7 @@ spec:
   resources:
     requests:
       storage: 50Gi  # 50GB for 30 days of metrics retention
-  storageClassName: microk8s-hostpath  # Use MicroK8s default storage class
-  # Note: For production (AKS/EKS), use: storageClassName: managed-premium
+  storageClassName: gp2
 ---
 # ============================================
 # Prometheus Deployment

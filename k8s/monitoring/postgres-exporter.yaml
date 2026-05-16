@@ -78,8 +78,19 @@ spec:
         - containerPort: 9187
           name: metrics
         env:
+        # EKS: DB_HOST/DB_PORT from db-secrets (ESO-synced from RDS Secrets Manager)
+        - name: DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: db-secrets
+              key: DB_HOST
+        - name: DB_PORT
+          valueFrom:
+            secretKeyRef:
+              name: db-secrets
+              key: DB_PORT
         - name: DATA_SOURCE_URI
-          value: "postgres.payflow.svc.cluster.local:5432/payflow?sslmode=disable"
+          value: "$(DB_HOST):$(DB_PORT)/payflow?sslmode=require"
         - name: DATA_SOURCE_USER
           valueFrom:
             secretKeyRef:

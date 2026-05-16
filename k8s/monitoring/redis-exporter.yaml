@@ -4,16 +4,8 @@
 # Purpose: Export Redis metrics to Prometheus
 # Local: redis-exporter-secret has REDIS_ADDR for in-cluster redis. EKS: ESO overwrites with ElastiCache endpoint:port.
 ---
-apiVersion: v1
-kind: Secret
-metadata:
-  name: redis-exporter-secret
-  namespace: payflow
-  labels:
-    app: redis-exporter
-type: Opaque
-stringData:
-  REDIS_ADDR: "redis.payflow.svc.cluster.local:6379"  # Local; EKS: ESO overwrites with ElastiCache
+# EKS: redis-exporter-secret is created by ESO (ExternalSecret in payflow Helm chart)
+# pulling endpoint+port from payflow/dev/redis in Secrets Manager.
 ---
 apiVersion: apps/v1
 kind: Deployment
