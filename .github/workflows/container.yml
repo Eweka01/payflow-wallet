@@ -60,6 +60,7 @@ jobs:
           args: >-
             --severity-threshold=high
             --file=services/${{ matrix.service }}/Dockerfile
+            --policy-path=.snyk
 
       # OIDC: exchange GitHub's JWT for temporary AWS credentials (no static keys).
       # Only runs on merge to main — PRs scan but never push.

@@ -1,0 +1,26 @@
+# Snyk (https://snyk.io) policy file
+version: v1.25.0
+
+# These ignores cover CVEs found in npm's own bundled internal packages
+# inside the node:22-alpine base image. They are NOT in the application code
+# or production node_modules (all services use npm ci --only=production).
+# The 182-dependency project Snyk scans is the npm CLI toolchain itself.
+# Risk accepted until a patched Node.js 22 base image is available.
+ignore:
+  SNYK-JS-BRACEEXPANSION-15789759:
+    - '*':
+        reason: >-
+          Infinite loop in brace-expansion@2.0.2 — a transitive dep of npm CLI
+          bundled with node:22-alpine. Not in app code or production
+          node_modules. No base-image fix available at this time.
+        expires: 2026-12-01T00:00:00.000Z
+
+  SNYK-JS-PICOMATCH-15765511:
+    - '*':
+        reason: >-
+          ReDoS in picomatch@4.0.3 — a transitive dep of npm CLI bundled with
+          node:22-alpine. Snyk reports no available upgrade or patch. Not
+          reachable from app code.
+        expires: 2026-12-01T00:00:00.000Z
+
+patch: {}
