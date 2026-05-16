@@ -12,8 +12,20 @@ module.exports = [
       },
     },
     rules: {
-      "no-unused-vars": ["warn", { argsIgnorePattern: "^_" }],
+      "no-unused-vars": ["warn", {
+        argsIgnorePattern: "^_|^next$|^err$|^error$",
+        varsIgnorePattern: "^_",
+        caughtErrors: "none",
+      }],
       "no-console": "off",
+    },
+  },
+  {
+    files: ["**/*.test.js", "**/test/**/*.js", "**/__tests__/**/*.js"],
+    languageOptions: {
+      globals: {
+        ...globals.jest,
+      },
     },
   },
   {

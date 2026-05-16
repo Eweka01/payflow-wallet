@@ -181,7 +181,7 @@ function generateTokens(userId, email, role) {
 
 // Health check (return 200 if app can serve; avoid 503 on Redis timeout so k8s liveness doesn't kill pod)
 app.get('/health', async (req, res) => {
-  let redisOk = false;
+  let redisOk;
   try {
     await pool.query('SELECT 1');
   } catch (e) {

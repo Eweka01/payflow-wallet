@@ -1,5 +1,3 @@
-/* eslint-env node */
-/* global require, process, setInterval, setTimeout, console */
 const express = require('express');
 const helmet = require('helmet');
 const cors = require('cors');

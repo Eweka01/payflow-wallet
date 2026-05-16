@@ -1,5 +1,3 @@
-/* eslint-env node */
-/* global require, process, module, setTimeout */
 const jwt = require('jsonwebtoken');
 const redis = require('redis');
 

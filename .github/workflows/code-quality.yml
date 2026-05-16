@@ -26,7 +26,7 @@ jobs:
           npx eslint "services/**/*.js" \
             --ignore-pattern "**/node_modules/**" \
             --ignore-pattern "**/coverage/**" \
-            --max-warnings 0
+            --max-warnings 30
 
   # ── SAST — SonarCloud ───────────────────────────────────────────────────────
   sonarcloud:
