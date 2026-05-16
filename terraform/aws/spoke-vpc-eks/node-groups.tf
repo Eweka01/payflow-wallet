@@ -66,7 +66,7 @@ resource "aws_security_group" "eks_nodes" {
   vpc_id      = aws_vpc.eks.id
 
   egress {
-    description = "All outbound — nodes need ECR, S3, Secrets Manager, AWS APIs"
+    description = "All outbound - nodes need ECR, S3, Secrets Manager, AWS APIs"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"

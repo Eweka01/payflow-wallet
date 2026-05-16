@@ -41,7 +41,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TF_ROOT="$REPO_ROOT/terraform/aws"
 
 # ── Pre-flight ────────────────────────────────────────────────────────────────
-clear
+clear 2>/dev/null || true
 echo ""
 echo -e "${RED}${BOLD}"
 cat << 'SKULL'
@@ -213,15 +213,31 @@ except:
     if ! terraform plan -destroy -input=false $var_file_arg \
         -out=/tmp/destroy_${module}_${ws}.plan \
         > /tmp/tf-plan.log 2>&1; then
-      warn "Plan failed for $module ($ws workspace):"
-      cat /tmp/tf-plan.log
-      # Check for stale lock
-      if grep -q "Error acquiring the state lock" /tmp/tf-plan.log 2>/dev/null; then
-        LOCK_ID=$(grep -oP '(?<=ID:        )[\w-]+' /tmp/tf-plan.log || echo "")
-        warn "Stale state lock detected. To unlock:"
-        warn "  cd $dir && terraform workspace select $ws && terraform force-unlock $LOCK_ID"
+
+      # If plan failed because a remote_state data source has no outputs (e.g. hub-vpc
+      # state was already destroyed before spoke-vpc-eks runs), retry with -refresh=false
+      # so Terraform uses cached state for data sources instead of re-reading from S3.
+      if grep -q "object with no attributes\|Unsupported attribute" /tmp/tf-plan.log 2>/dev/null; then
+        warn "Remote state data source empty — retrying with -refresh=false..."
+        if ! terraform plan -destroy -input=false -refresh=false $var_file_arg \
+            -out=/tmp/destroy_${module}_${ws}.plan \
+            > /tmp/tf-plan.log 2>&1; then
+          warn "Plan failed even with -refresh=false for $module ($ws workspace):"
+          cat /tmp/tf-plan.log
+          continue
+        fi
+        log "Plan succeeded with -refresh=false"
+      else
+        warn "Plan failed for $module ($ws workspace):"
+        cat /tmp/tf-plan.log
+        # Check for stale lock
+        if grep -q "Error acquiring the state lock" /tmp/tf-plan.log 2>/dev/null; then
+          LOCK_ID=$(grep -oP '(?<=ID:        )[\w-]+' /tmp/tf-plan.log || echo "")
+          warn "Stale state lock detected. To unlock:"
+          warn "  cd $dir && terraform workspace select $ws && terraform force-unlock $LOCK_ID"
+        fi
+        continue
       fi
-      continue
     fi
 
     local to_destroy
@@ -268,6 +284,126 @@ except Exception as e:
   $found_and_destroyed || warn "Nothing was destroyed for $module."
   echo ""
 }
+
+# =============================================================================
+# PRE-DESTROY CLEANUP — non-Terraform-managed resources that block VPC deletion
+# =============================================================================
+# GuardDuty auto-creates interface VPC endpoints in every VPC it monitors.
+# These endpoints are NOT in Terraform state, so terraform destroy does not
+# remove them. They hold ENIs in the hub VPC subnets, preventing subnet and
+# VPC deletion. Delete GuardDuty detectors first so the endpoints are removed
+# before hub-vpc runs.
+cleanup_guardduty() {
+  log "Checking for GuardDuty detectors (auto-creates VPC endpoints that block hub-vpc destroy)..."
+  local detectors
+  detectors=$(aws guardduty list-detectors --region "$REGION" \
+    --query 'DetectorIds[]' --output text 2>/dev/null || true)
+
+  if [ -z "$detectors" ]; then
+    log "No GuardDuty detectors found."
+    return 0
+  fi
+
+  for det in $detectors; do
+    log "Deleting GuardDuty detector: $det"
+    aws guardduty delete-detector --detector-id "$det" --region "$REGION" 2>/dev/null || true
+  done
+
+  # Also explicitly delete any leftover interface endpoints in the hub VPC
+  local hub_vpc
+  hub_vpc=$(aws ec2 describe-vpcs \
+    --filters "Name=tag:Name,Values=*hub*" \
+    --query 'Vpcs[0].VpcId' --output text --region "$REGION" 2>/dev/null || true)
+
+  if [ -n "$hub_vpc" ] && [ "$hub_vpc" != "None" ]; then
+    local endpoints
+    endpoints=$(aws ec2 describe-vpc-endpoints \
+      --filters "Name=vpc-id,Values=$hub_vpc" "Name=vpc-endpoint-type,Values=Interface" \
+      --query 'VpcEndpoints[?State!=`deleted`].VpcEndpointId' \
+      --output text --region "$REGION" 2>/dev/null || true)
+
+    if [ -n "$endpoints" ]; then
+      log "Deleting interface VPC endpoints in hub VPC: $endpoints"
+      aws ec2 delete-vpc-endpoints \
+        --vpc-endpoint-ids $endpoints \
+        --region "$REGION" 2>/dev/null || true
+      log "Waiting 30s for endpoint ENIs to release..."
+      sleep 30
+    else
+      log "No interface VPC endpoints in hub VPC."
+    fi
+  fi
+  success "GuardDuty cleanup complete."
+}
+
+cleanup_guardduty
+
+# Kubernetes creates ELB security groups (k8s-elb-*) and classic ELBs for
+# Services of type LoadBalancer. When the EKS cluster is deleted by Terraform,
+# these are NOT cleaned up because Kubernetes never runs a graceful shutdown.
+# They hold ENIs in the spoke VPC subnets, preventing subnet/VPC deletion.
+cleanup_k8s_elbs() {
+  log "Checking for Kubernetes-created ELBs and security groups..."
+
+  local spoke_vpc
+  spoke_vpc=$(aws ec2 describe-vpcs \
+    --filters "Name=tag:Name,Values=*spoke*,*eks*" \
+    --query 'Vpcs[0].VpcId' --output text --region "$REGION" 2>/dev/null || true)
+
+  if [ -z "$spoke_vpc" ] || [ "$spoke_vpc" = "None" ]; then
+    log "No spoke VPC found — nothing to clean up."
+    return 0
+  fi
+
+  # Delete classic ELBs whose ENIs are in spoke subnets
+  local classic_elbs
+  classic_elbs=$(aws elb describe-load-balancers --region "$REGION" \
+    --query "LoadBalancerDescriptions[?VPCId=='$spoke_vpc'].LoadBalancerName" \
+    --output text 2>/dev/null || true)
+  for elb in $classic_elbs; do
+    log "Deleting classic ELB: $elb"
+    aws elb delete-load-balancer --load-balancer-name "$elb" --region "$REGION" 2>/dev/null || true
+  done
+
+  # Delete ELBv2 (NLB/ALB) in spoke VPC
+  local v2_arns
+  v2_arns=$(aws elbv2 describe-load-balancers --region "$REGION" \
+    --query "LoadBalancers[?VpcId=='$spoke_vpc'].LoadBalancerArn" \
+    --output text 2>/dev/null || true)
+  for arn in $v2_arns; do
+    log "Deleting ELBv2: $arn"
+    aws elbv2 delete-load-balancer --load-balancer-arn "$arn" --region "$REGION" 2>/dev/null || true
+  done
+
+  # Delete k8s-elb-* security groups left behind after ELB deletion
+  local k8s_sgs
+  k8s_sgs=$(aws ec2 describe-security-groups \
+    --filters "Name=vpc-id,Values=$spoke_vpc" "Name=group-name,Values=k8s-elb-*" \
+    --query 'SecurityGroups[].GroupId' --output text --region "$REGION" 2>/dev/null || true)
+  for sg in $k8s_sgs; do
+    # Revoke all rules first (SGs may reference each other)
+    aws ec2 revoke-security-group-ingress --group-id "$sg" \
+      --ip-permissions "$(aws ec2 describe-security-groups --group-ids "$sg" \
+        --query 'SecurityGroups[0].IpPermissions' --output json --region "$REGION" 2>/dev/null)" \
+      --region "$REGION" 2>/dev/null || true
+    aws ec2 revoke-security-group-egress --group-id "$sg" \
+      --ip-permissions "$(aws ec2 describe-security-groups --group-ids "$sg" \
+        --query 'SecurityGroups[0].IpPermissionsEgress' --output json --region "$REGION" 2>/dev/null)" \
+      --region "$REGION" 2>/dev/null || true
+    log "Deleting k8s ELB security group: $sg"
+    aws ec2 delete-security-group --group-id "$sg" --region "$REGION" 2>/dev/null || true
+  done
+
+  if [ -n "$classic_elbs$v2_arns$k8s_sgs" ]; then
+    log "Waiting 20s for ELB ENIs to release..."
+    sleep 20
+  else
+    log "No Kubernetes ELBs or SGs found."
+  fi
+  success "Kubernetes ELB cleanup complete."
+}
+
+cleanup_k8s_elbs
 
 # =============================================================================
 # DESTROY SEQUENCE — reverse of spinup order

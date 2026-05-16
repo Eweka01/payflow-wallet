@@ -102,7 +102,7 @@ resource "aws_security_group" "bootstrap" {
   vpc_id      = var.vpc_id
 
   egress {
-    description = "All outbound — SSM, EKS API, ECR, package repositories"
+    description = "All outbound - SSM, EKS API, ECR, package repositories"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
