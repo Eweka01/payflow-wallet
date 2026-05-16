@@ -7,8 +7,8 @@ metadata:
     {{- include "payflow.labels" . | nindent 4 }}
 spec:
   hard:
-    requests.cpu: "3"
-    requests.memory: 3Gi
-    limits.cpu: "6"
-    limits.memory: 6Gi
+    requests.cpu: "4"
+    requests.memory: 4Gi
+    limits.cpu: "8"
+    limits.memory: 8Gi
     pods: "30"
