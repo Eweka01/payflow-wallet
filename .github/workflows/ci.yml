@@ -1,0 +1,209 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  AWS_REGION:   us-east-1
+  ECR_REGISTRY: 470439679607.dkr.ecr.us-east-1.amazonaws.com
+  ECR_PREFIX:   payflow-eks-cluster
+
+# ──────────────────────────────────────────────────────────────────────────────
+# STAGE 1 — Code Quality
+# Runs: ESLint, SonarCloud SAST, Snyk SCA in parallel.
+# All three must pass before Stage 2 starts.
+# ──────────────────────────────────────────────────────────────────────────────
+jobs:
+
+  lint:
+    name: "Stage 1 | ESLint"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install ESLint
+        run: npm install --save-dev eslint @eslint/js globals
+
+      - name: Run ESLint across all services
+        run: |
+          npx eslint "services/**/*.js" \
+            --ignore-pattern "**/node_modules/**" \
+            --ignore-pattern "**/coverage/**" \
+            --max-warnings 30
+
+  sonarcloud:
+    name: "Stage 1 | SonarCloud SAST"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: SonarSource/sonarqube-scan-action@v4
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: https://sonarcloud.io
+
+  snyk-sca:
+    name: "Stage 1 | Snyk SCA"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - uses: snyk/actions/setup@master
+
+      - name: Scan each service for vulnerable dependencies
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          # frontend excluded: all CVEs are in react-scripts@5.0.1 (CRA is EOL,
+          # build-tool only — none ship in the production nginx container).
+          # Runtime image vulnerabilities are caught by the container scan below.
+          for svc in \
+            services/api-gateway \
+            services/auth-service \
+            services/wallet-service \
+            services/transaction-service \
+            services/notification-service; do
+            echo "──── Scanning $svc ────"
+            (cd "$svc" && npm install --no-save && snyk test --severity-threshold=high) || exit 1
+          done
+
+# ──────────────────────────────────────────────────────────────────────────────
+# STAGE 2 — Container Build, Scan & Push
+# Runs after all Stage 1 jobs pass.
+# Builds each service image, scans with Snyk, pushes to ECR (main only).
+# ──────────────────────────────────────────────────────────────────────────────
+
+  build-scan-push:
+    name: "Stage 2 | Build / Scan / Push — ${{ matrix.service }}"
+    runs-on: ubuntu-latest
+    needs: [lint, sonarcloud, snyk-sca]
+
+    permissions:
+      id-token: write
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - api-gateway
+          - auth-service
+          - wallet-service
+          - transaction-service
+          - notification-service
+          - frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./services
+          file: ./services/${{ matrix.service }}/Dockerfile
+          load: true
+          tags: ${{ env.ECR_REGISTRY }}/${{ env.ECR_PREFIX }}/${{ matrix.service }}:${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+
+      - name: Snyk container scan
+        uses: snyk/actions/docker@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          image: ${{ env.ECR_REGISTRY }}/${{ env.ECR_PREFIX }}/${{ matrix.service }}:${{ github.sha }}
+          args: >-
+            --severity-threshold=high
+            --file=services/${{ matrix.service }}/Dockerfile
+            --policy-path=.snyk
+
+      - name: Configure AWS credentials (OIDC)
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Push to ECR
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: |
+          IMAGE=${{ env.ECR_REGISTRY }}/${{ env.ECR_PREFIX }}/${{ matrix.service }}
+          docker tag  ${IMAGE}:${{ github.sha }} ${IMAGE}:latest
+          docker push ${IMAGE}:${{ github.sha }}
+          docker push ${IMAGE}:latest
+          echo "Pushed ${IMAGE}:${{ github.sha }}"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# STAGE 3 — IaC Security
+# Runs after all container jobs pass.
+# Checkov scans all Terraform modules for misconfigurations.
+# ──────────────────────────────────────────────────────────────────────────────
+
+  checkov:
+    name: "Stage 3 | Checkov IaC Scan"
+    runs-on: ubuntu-latest
+    needs: build-scan-push
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Checkov
+        uses: bridgecrewio/checkov-action@master
+        with:
+          directory: terraform/
+          framework: terraform
+          output_format: github_failed_only
+          soft_fail: false
+
+# ──────────────────────────────────────────────────────────────────────────────
+# STAGE 4 — Deploy
+# Runs after Stage 3 passes, on main branch merges only.
+# Writes the new image SHA into Helm values so ArgoCD syncs the cluster.
+# ──────────────────────────────────────────────────────────────────────────────
+
+  update-image-tag:
+    name: "Stage 4 | Update Image Tag → ArgoCD"
+    runs-on: ubuntu-latest
+    needs: checkov
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Write new image tag into Helm values
+        run: |
+          sed -i "s/imageTag:.*/imageTag: ${{ github.sha }}/" helm/payflow/values-dev.yaml
+
+      - name: Commit and push
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add helm/payflow/values-dev.yaml
+          git commit -m "ci: update imageTag to ${{ github.sha }} [skip ci]"
+          git pull --rebase origin main
+          git push origin main
