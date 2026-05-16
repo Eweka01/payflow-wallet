@@ -7,7 +7,7 @@
 
 global:
   environment: dev
-  imageTag: d2cde4f2eccf78e99bd1a97d5829ffc0f038882d
+  imageTag: 6c71f662b1c8ac2edc3db26da787c627a957a6dc
 
 externalSecrets:
   environment: dev  # Resolves to payflow/dev/ in Secrets Manager
