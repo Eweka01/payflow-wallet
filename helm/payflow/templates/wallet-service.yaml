@@ -12,6 +12,7 @@ metadata:
     app: {{ $svc }}
 spec:
   replicas: {{ $cfg.replicas }}
+  revisionHistoryLimit: 2
   strategy:
     type: RollingUpdate
     rollingUpdate:
