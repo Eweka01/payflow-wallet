@@ -1,0 +1,115 @@
+# Default values — environment-specific overrides go in values-dev.yaml
+global:
+  environment: dev
+  registry: 470439679607.dkr.ecr.us-east-1.amazonaws.com
+  imagePrefix: payflow-eks-cluster
+  imageTag: latest
+  awsRegion: us-east-1
+  dbName: payflow
+
+# External Secrets Operator — pulls credentials from AWS Secrets Manager
+externalSecrets:
+  enabled: true
+  region: us-east-1
+  # Maps to the Secrets Manager path prefix: payflow/<env>/
+  environment: dev
+  refreshInterval: 5m
+
+# Per-service configuration
+# replicas, resources, hpa limits
+services:
+  api-gateway:
+    port: 3000
+    replicas: 1
+    resources:
+      requests:
+        memory: "256Mi"
+        cpu: "200m"
+      limits:
+        memory: "512Mi"
+        cpu: "400m"
+    hpa:
+      min: 2
+      max: 10
+      cpuTarget: 70
+      memTarget: 80
+
+  auth-service:
+    port: 3004
+    replicas: 1
+    resources:
+      requests:
+        memory: "256Mi"
+        cpu: "200m"
+      limits:
+        memory: "512Mi"
+        cpu: "400m"
+    hpa:
+      min: 2
+      max: 8
+      cpuTarget: 70
+      memTarget: 80
+
+  wallet-service:
+    port: 3001
+    replicas: 1
+    resources:
+      requests:
+        memory: "256Mi"
+        cpu: "200m"
+      limits:
+        memory: "512Mi"
+        cpu: "400m"
+    hpa:
+      min: 2
+      max: 8
+      cpuTarget: 70
+      memTarget: 80
+
+  transaction-service:
+    port: 3002
+    replicas: 1
+    resources:
+      requests:
+        memory: "256Mi"
+        cpu: "200m"
+      limits:
+        memory: "512Mi"
+        cpu: "400m"
+    hpa:
+      min: 2
+      max: 10
+      cpuTarget: 70
+      memTarget: 80
+
+  notification-service:
+    port: 3003
+    replicas: 1
+    resources:
+      requests:
+        memory: "256Mi"
+        cpu: "200m"
+      limits:
+        memory: "512Mi"
+        cpu: "400m"
+    hpa:
+      min: 2
+      max: 6
+      cpuTarget: 70
+      memTarget: 80
+
+  frontend:
+    port: 80
+    replicas: 1
+    resources:
+      requests:
+        memory: "64Mi"
+        cpu: "50m"
+      limits:
+        memory: "128Mi"
+        cpu: "100m"
+    hpa:
+      min: 2
+      max: 6
+      cpuTarget: 70
+      memTarget: 80

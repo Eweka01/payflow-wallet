@@ -1,0 +1,69 @@
+{{- $svc := "frontend" }}
+{{- $cfg := index .Values.services $svc }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $svc }}
+  namespace: payflow
+  labels:
+    {{- include "payflow.labels" . | nindent 4 }}
+    app: {{ $svc }}
+spec:
+  replicas: {{ $cfg.replicas }}
+  selector:
+    matchLabels:
+      app: {{ $svc }}
+  template:
+    metadata:
+      labels:
+        app: {{ $svc }}
+        {{- include "payflow.labels" . | nindent 8 }}
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: {{ $svc }}
+          image: {{ include "payflow.image" (dict "service" $svc "Values" .Values) }}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+          ports:
+            - containerPort: {{ $cfg.port }}
+          env:
+            # nginx proxies /api/* to api-gateway using the cluster-local DNS name
+            - name: API_GATEWAY_URL
+              value: "http://api-gateway.payflow.svc.cluster.local:80"
+            # kube-dns resolver used by nginx for dynamic upstream resolution
+            - name: NGINX_RESOLVER
+              value: "kube-dns.kube-system.svc.cluster.local"
+          resources:
+            {{- toYaml $cfg.resources | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /
+              port: {{ $cfg.port }}
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /
+              port: {{ $cfg.port }}
+            initialDelaySeconds: 5
+            periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $svc }}
+  namespace: payflow
+  labels:
+    {{- include "payflow.labels" . | nindent 4 }}
+    app: {{ $svc }}
+spec:
+  type: ClusterIP
+  selector:
+    app: {{ $svc }}
+  ports:
+    - protocol: TCP
+      port: {{ $cfg.port }}
+      targetPort: {{ $cfg.port }}

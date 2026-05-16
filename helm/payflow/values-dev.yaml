@@ -1,0 +1,13 @@
+# EKS dev environment overrides
+# Applied on top of values.yaml:
+#   helm upgrade --install payflow helm/payflow -f helm/payflow/values-dev.yaml
+#
+# Reduces CPU requests and replica counts to fit within t3.large node capacity.
+# Node capacity: 2 vCPU / 8GB RAM — 6 services × 200m cpu request = 1.2 vCPU, comfortable.
+
+global:
+  environment: dev
+  imageTag: latest  # ArgoCD Image Updater will update this per-push
+
+externalSecrets:
+  environment: dev  # Resolves to payflow/dev/ in Secrets Manager

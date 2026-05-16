@@ -1,0 +1,12 @@
+apiVersion: v2
+name: payflow
+description: PayFlow Wallet — 6-service fintech microservices app
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+keywords:
+  - payflow
+  - fintech
+  - microservices
+maintainers:
+  - name: Eweka01
