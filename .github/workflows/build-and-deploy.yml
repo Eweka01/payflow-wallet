@@ -1,9 +1,0 @@
-# Superseded by code-quality.yml, container.yml, and iac.yml.
-# This file is intentionally disabled — do not add jobs here.
-name: _disabled
-on:
-  workflow_dispatch:
-    inputs:
-      disabled:
-        description: "This workflow has been replaced"
-        required: false
