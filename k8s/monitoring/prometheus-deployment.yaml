@@ -85,8 +85,8 @@ spec:
             - '--web.enable-lifecycle'
           resources:
             requests:
-              memory: "512Mi"   # Minimum memory needed
-              cpu: "250m"       # Minimum CPU (250 millicores)
+              memory: "256Mi"
+              cpu: "50m"
             limits:
               memory: "1Gi"     # Maximum memory allowed
               cpu: "500m"       # Maximum CPU

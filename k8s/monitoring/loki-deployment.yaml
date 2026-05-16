@@ -143,8 +143,8 @@ spec:
             - -config.file=/etc/loki/loki.yml  # Configuration file location
           resources:
             requests:
-              memory: "512Mi"   # Minimum memory needed
-              cpu: "250m"       # Minimum CPU (250 millicores)
+              memory: "256Mi"
+              cpu: "50m"
             limits:
               memory: "2Gi"     # Maximum memory allowed
               cpu: "1000m"      # Maximum CPU (1 core)
