@@ -3,6 +3,8 @@ kind: ConfigMap
 metadata:
   name: app-config
   namespace: payflow
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
   labels:
     {{- include "payflow.labels" . | nindent 4 }}
 data:

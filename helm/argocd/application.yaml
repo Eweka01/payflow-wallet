@@ -1,15 +1,8 @@
-# ArgoCD Application — tells ArgoCD what to deploy and where.
-# Apply this once after ArgoCD is installed:
-#   kubectl apply -f helm/argocd/application.yaml
-#
-# ArgoCD will then continuously sync the cluster to the state described
-# in helm/payflow/ on the main branch, applying values-dev.yaml overrides.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: payflow
   namespace: argocd
-  # finalizer ensures ArgoCD deletes all managed resources when this Application is deleted
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
@@ -30,8 +23,21 @@ spec:
 
   syncPolicy:
     automated:
-      prune: true       # Remove resources deleted from Git
-      selfHeal: true    # Revert manual changes made directly on the cluster
+      prune: true
+      selfHeal: true
     syncOptions:
-      - CreateNamespace=true   # Create payflow namespace if it doesn't exist
-      - ServerSideApply=true   # Use server-side apply for larger resources
+      - CreateNamespace=true
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true
+
+  # Ignore fields managed by controllers so ArgoCD doesn't show false OutOfSync
+  ignoreDifferences:
+    - group: autoscaling
+      kind: HorizontalPodAutoscaler
+      jsonPointers:
+        - /spec/metrics
+        - /spec/behavior
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /spec/replicas   # HPA manages this at runtime

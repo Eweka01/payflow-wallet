@@ -5,6 +5,8 @@ kind: Deployment
 metadata:
   name: {{ $svc }}
   namespace: payflow
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
   labels:
     {{- include "payflow.labels" . | nindent 4 }}
     app: {{ $svc }}
