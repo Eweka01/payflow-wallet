@@ -232,10 +232,10 @@ function LoginPage({ onLogin }) {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-violet-50 to-violet-100 flex items-center justify-center p-4">
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-blue-100 flex items-center justify-center p-4">
       <div className="bg-white rounded-2xl shadow-xl p-8 w-full max-w-md">
         <div className="flex items-center justify-center mb-8">
-          <div className="w-16 h-16 bg-gradient-to-br from-violet-600 to-violet-700 rounded-2xl flex items-center justify-center">
+          <div className="w-16 h-16 bg-gradient-to-br from-blue-600 to-blue-700 rounded-2xl flex items-center justify-center">
             <Wallet className="w-10 h-10 text-white" />
           </div>
         </div>
@@ -258,7 +258,7 @@ function LoginPage({ onLogin }) {
                 type="text"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-500"
+                className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                 placeholder="John Doe"
               />
             </div>
@@ -270,7 +270,7 @@ function LoginPage({ onLogin }) {
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-500"
+              className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
               placeholder="you@example.com"
             />
           </div>
@@ -281,7 +281,7 @@ function LoginPage({ onLogin }) {
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-500"
+              className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
               placeholder="••••••••"
             />
             {!isLogin && (
@@ -294,7 +294,7 @@ function LoginPage({ onLogin }) {
           <button
             onClick={handleSubmit}
             disabled={loading || !email || !password || (!isLogin && !name)}
-            className="w-full bg-violet-600 text-white py-3 rounded-lg font-medium hover:bg-violet-700 transition-colors disabled:bg-slate-300 disabled:cursor-not-allowed flex items-center justify-center space-x-2"
+            className="w-full bg-blue-600 text-white py-3 rounded-lg font-medium hover:bg-blue-700 transition-colors disabled:bg-slate-300 disabled:cursor-not-allowed flex items-center justify-center space-x-2"
           >
             {loading ? (
               <>
@@ -313,14 +313,14 @@ function LoginPage({ onLogin }) {
               setIsLogin(!isLogin);
               setError(null);
             }}
-            className="text-sm text-violet-600 hover:text-violet-700"
+            className="text-sm text-blue-600 hover:text-blue-700"
           >
             {isLogin ? "Don't have an account? Sign up" : 'Already have an account? Sign in'}
           </button>
         </div>
 
-        <div className="mt-8 p-4 bg-violet-50 rounded-lg">
-          <p className="text-xs text-violet-800 text-center">
+        <div className="mt-8 p-4 bg-blue-50 rounded-lg">
+          <p className="text-xs text-blue-800 text-center">
             🔒 Secured with JWT authentication, encrypted connections, and industry-standard security
           </p>
         </div>
@@ -484,7 +484,7 @@ export default function PayFlowApp() {
   if (loading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 flex items-center justify-center">
-        <Activity className="w-12 h-12 text-violet-600 animate-spin" />
+        <Activity className="w-12 h-12 text-blue-600 animate-spin" />
       </div>
     );
   }
@@ -507,7 +507,7 @@ export default function PayFlowApp() {
         <div className="max-w-7xl mx-auto px-6 py-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center space-x-3">
-              <div className="w-10 h-10 bg-gradient-to-br from-violet-600 to-violet-700 rounded-lg flex items-center justify-center">
+              <div className="w-10 h-10 bg-gradient-to-br from-blue-600 to-blue-700 rounded-lg flex items-center justify-center">
                 <Wallet className="w-6 h-6 text-white" />
               </div>
               <div>
@@ -550,7 +550,7 @@ export default function PayFlowApp() {
                 onClick={() => setActiveTab(tab)}
                 className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
                   activeTab === tab
-                    ? 'border-violet-600 text-violet-600'
+                    ? 'border-blue-600 text-blue-600'
                     : 'border-transparent text-slate-600 hover:text-slate-900'
                 }`}
               >
@@ -587,15 +587,15 @@ export default function PayFlowApp() {
       <main className="max-w-7xl mx-auto px-6 py-8">
         {activeTab === 'dashboard' && wallet && (
           <div className="space-y-6">
-            <div className="bg-gradient-to-br from-violet-600 to-violet-700 rounded-2xl p-8 text-white shadow-lg">
+            <div className="bg-gradient-to-br from-blue-600 to-blue-700 rounded-2xl p-8 text-white shadow-lg">
               <div className="flex justify-between items-start">
                 <div>
-                  <p className="text-violet-100 text-sm mb-2">Available Balance</p>
+                  <p className="text-blue-100 text-sm mb-2">Available Balance</p>
                   <h2 className="text-4xl font-bold">${parseFloat(wallet.balance).toLocaleString('en-US', { minimumFractionDigits: 2 })}</h2>
-                  <p className="text-violet-100 text-sm mt-4">{wallet.name}</p>
-                  <p className="text-violet-200 text-xs mt-1">{wallet.user_id}</p>
+                  <p className="text-blue-100 text-sm mt-4">{wallet.name}</p>
+                  <p className="text-blue-200 text-xs mt-1">{wallet.user_id}</p>
                 </div>
-                <Wallet className="w-12 h-12 text-violet-300 opacity-50" />
+                <Wallet className="w-12 h-12 text-blue-300 opacity-50" />
               </div>
             </div>
 
@@ -610,7 +610,7 @@ export default function PayFlowApp() {
               <div className="bg-white rounded-xl p-6 shadow-sm border border-slate-200">
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-slate-600 text-sm">Processing</span>
-                  <Activity className="w-4 h-4 text-violet-500" />
+                  <Activity className="w-4 h-4 text-blue-500" />
                 </div>
                 <p className="text-2xl font-bold text-slate-900">{queueMetrics.processing}</p>
               </div>
@@ -640,7 +640,7 @@ export default function PayFlowApp() {
                   <div key={notif.id} className="flex items-start space-x-3 p-3 bg-slate-50 rounded-lg">
                     <div className={`w-2 h-2 rounded-full mt-2 ${
                       notif.type === 'TRANSACTION_COMPLETED' ? 'bg-green-500' :
-                      notif.type === 'TRANSACTION_RECEIVED' ? 'bg-violet-500' : 'bg-red-500'
+                      notif.type === 'TRANSACTION_RECEIVED' ? 'bg-blue-500' : 'bg-red-500'
                     }`} />
                     <div className="flex-1">
                       <p className="text-sm text-slate-900">{notif.message}</p>
@@ -660,7 +660,7 @@ export default function PayFlowApp() {
           <div className="max-w-2xl mx-auto">
             <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-8">
               <div className="flex items-center space-x-3 mb-6">
-                <Send className="w-6 h-6 text-violet-600" />
+                <Send className="w-6 h-6 text-blue-600" />
                 <h2 className="text-2xl font-bold text-slate-900">Send Money</h2>
               </div>
               
@@ -671,7 +671,7 @@ export default function PayFlowApp() {
                     value={recipient}
                     onChange={(e) => setRecipient(e.target.value)}
                     disabled={sendLoading}
-                    className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-500"
+                    className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                   >
                     <option value="">Select recipient</option>
                     {otherUsers.map(u => (
@@ -691,7 +691,7 @@ export default function PayFlowApp() {
                       disabled={sendLoading}
                       placeholder="0.00"
                       step="0.01"
-                      className="w-full pl-8 pr-4 py-3 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-500"
+                      className="w-full pl-8 pr-4 py-3 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                     />
                   </div>
                   <p className="text-sm text-slate-500 mt-2">
@@ -702,7 +702,7 @@ export default function PayFlowApp() {
                 <button
                   onClick={handleSendMoney}
                   disabled={sendLoading || !sendAmount || !recipient}
-                  className="w-full bg-violet-600 text-white py-3 rounded-lg font-medium hover:bg-violet-700 transition-colors disabled:bg-slate-300 flex items-center justify-center space-x-2"
+                  className="w-full bg-blue-600 text-white py-3 rounded-lg font-medium hover:bg-blue-700 transition-colors disabled:bg-slate-300 flex items-center justify-center space-x-2"
                 >
                   {sendLoading ? (
                     <>
@@ -718,8 +718,8 @@ export default function PayFlowApp() {
                 </button>
               </div>
 
-              <div className="mt-6 p-4 bg-violet-50 border border-violet-200 rounded-lg">
-                <p className="text-sm text-violet-800">
+              <div className="mt-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                <p className="text-sm text-blue-800">
                   <strong>Secure:</strong> Transactions are processed asynchronously through RabbitMQ with full audit logging.
                 </p>
               </div>
@@ -768,8 +768,8 @@ export default function PayFlowApp() {
                           )}
                           {txn.status === 'PROCESSING' && (
                             <>
-                              <Activity className="w-4 h-4 text-violet-500 animate-spin" />
-                              <span className="text-xs text-violet-600 font-medium">Processing</span>
+                              <Activity className="w-4 h-4 text-blue-500 animate-spin" />
+                              <span className="text-xs text-blue-600 font-medium">Processing</span>
                             </>
                           )}
                           {txn.status === 'COMPLETED' && (
@@ -819,9 +819,9 @@ export default function PayFlowApp() {
                   </div>
                   {service?.database && (
                     <div className="grid grid-cols-2 gap-4 mt-3">
-                      <div className="p-3 bg-violet-50 rounded-lg">
-                        <p className="text-xs text-violet-600 mb-1">Database</p>
-                        <p className="text-sm font-medium text-violet-900">{service.database}</p>
+                      <div className="p-3 bg-blue-50 rounded-lg">
+                        <p className="text-xs text-blue-600 mb-1">Database</p>
+                        <p className="text-sm font-medium text-blue-900">{service.database}</p>
                       </div>
                       {service.redis && (
                         <div className="p-3 bg-purple-50 rounded-lg">
@@ -845,7 +845,7 @@ export default function PayFlowApp() {
               <h3 className="font-semibold text-slate-900 mb-4">Production Architecture</h3>
               <div className="space-y-3 text-sm text-slate-600">
                 <div className="flex items-start space-x-2">
-                  <div className="w-2 h-2 bg-violet-600 rounded-full mt-1.5" />
+                  <div className="w-2 h-2 bg-blue-600 rounded-full mt-1.5" />
                   <p><strong>JWT Auth:</strong> Bearer token authentication with refresh tokens</p>
                 </div>
                 <div className="flex items-start space-x-2">
