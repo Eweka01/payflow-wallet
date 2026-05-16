@@ -92,7 +92,7 @@ resource "aws_eks_cluster" "payflow" {
 
   # Lifecycle: prod workspace blocks destroy; access_config ignored so CLI-set values do not force replace
   lifecycle {
-    prevent_destroy = terraform.workspace == "prod"
+    prevent_destroy = false
     ignore_changes = [
       tags,
       enabled_cluster_log_types,

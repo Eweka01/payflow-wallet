@@ -174,11 +174,11 @@ resource "aws_route_table" "eks_private" {
 
   vpc_id = aws_vpc.eks.id
 
-  # Route to Transit Gateway (for Hub connectivity)
+  # Route to Transit Gateway (for Hub connectivity — specific hub CIDR only)
   dynamic "route" {
     for_each = local.transit_gateway_id != null ? [1] : []
     content {
-      cidr_block         = "10.0.0.0/8"
+      cidr_block         = var.hub_vpc_cidr
       transit_gateway_id = local.transit_gateway_id
     }
   }

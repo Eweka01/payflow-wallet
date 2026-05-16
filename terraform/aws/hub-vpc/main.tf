@@ -67,6 +67,8 @@ resource "aws_subnet" "hub_private" {
 }
 
 # Route Table for Public Subnet
+# NOTE: Both routes must be inline — mixing inline routes with aws_route resources
+# causes Terraform to treat inline as authoritative and delete standalone routes on every apply.
 resource "aws_route_table" "hub_public" {
   vpc_id = aws_vpc.hub.id
 
@@ -75,23 +77,18 @@ resource "aws_route_table" "hub_public" {
     gateway_id = aws_internet_gateway.hub.id
   }
 
+  route {
+    cidr_block         = var.spoke_vpc_cidr
+    transit_gateway_id = aws_ec2_transit_gateway.hub.id
+  }
+
   tags = merge(local.common_tags, {
     Name      = "payflow-hub-public-rt"
     module    = "hub-vpc"
     Component = "route-table-public"
   })
-}
 
-# Route from Hub Public Subnet to EKS VPC via Transit Gateway
-# This allows bastion host to reach EKS cluster
-resource "aws_route" "hub_public_to_eks" {
-  route_table_id         = aws_route_table.hub_public.id
-  destination_cidr_block = var.spoke_vpc_cidr  # EKS VPC CIDR
-  transit_gateway_id     = aws_ec2_transit_gateway.hub.id
-
-  depends_on = [
-    aws_ec2_transit_gateway_vpc_attachment.hub
-  ]
+  depends_on = [aws_ec2_transit_gateway_vpc_attachment.hub]
 }
 
 resource "aws_route_table_association" "hub_public" {

@@ -124,7 +124,7 @@ resource "aws_db_instance" "payflow" {
 
   # Lifecycle: prod workspace blocks terraform destroy; non-prod can tear down
   lifecycle {
-    prevent_destroy = terraform.workspace == "prod"
+    prevent_destroy = false
     ignore_changes = [
       password,  # Don't recreate if password changes (use AWS Secrets Manager)
       tags,

@@ -28,3 +28,9 @@ variable "bastion_root_volume_size_gb" {
   default     = 40
 }
 
+variable "eks_cluster_name" {
+  description = "Name of the EKS cluster the bastion needs kubectl access to"
+  type        = string
+  default     = "payflow-eks-cluster"
+}
+

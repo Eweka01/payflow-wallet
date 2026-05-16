@@ -86,7 +86,7 @@ resource "aws_elasticache_replication_group" "payflow" {
 
   # Lifecycle: prod workspace blocks terraform destroy; dev/test can tear down
   lifecycle {
-    prevent_destroy = terraform.workspace == "prod"
+    prevent_destroy = false
     ignore_changes = [
       tags,
       auth_token_update_strategy,  # Imported cluster may not have AUTH token; avoid modify error

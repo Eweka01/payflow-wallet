@@ -12,7 +12,7 @@ terraform {
     # State files are automatically separated by workspace:
     # - env:/dev/aws/eks/terraform.tfstate
     # - env:/prod/aws/eks/terraform.tfstate
-    bucket         = "payflow-tfstate-334091769766"  # Replace ACCOUNT_ID with your AWS account ID
+    bucket         = "payflow-tfstate-470439679607"  # Replace ACCOUNT_ID with your AWS account ID
     key            = "aws/eks/terraform.tfstate"  # Workspace prefix added automatically
     region         = "us-east-1"
     dynamodb_table = "payflow-tfstate-lock"

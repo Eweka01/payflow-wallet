@@ -62,6 +62,9 @@ secrets/
 !secrets/.gitkeep
 
 # Terraform sensitive inputs & state
+# SSM Session Manager plugin installer (downloaded during setup, not source code)
+sessionmanager-bundle.zip
+sessionmanager-bundle/
 **/.terraform/
 *.tfstate
 *.tfstate.*

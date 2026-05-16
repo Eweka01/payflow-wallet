@@ -7,6 +7,10 @@ data "aws_vpc" "eks" {
     name   = "tag:Name"
     values = ["payflow-eks-vpc"]
   }
+  filter {
+    name   = "state"
+    values = ["available"]
+  }
 }
 
 data "aws_subnets" "eks_private" {
