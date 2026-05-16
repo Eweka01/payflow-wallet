@@ -41,3 +41,7 @@ spec:
       kind: Deployment
       jsonPointers:
         - /spec/replicas   # HPA manages this at runtime
+    - group: external-secrets.io
+      kind: ExternalSecret
+      jsonPointers:
+        - /status          # ESO controller writes status fields not in template
