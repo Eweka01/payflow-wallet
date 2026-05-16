@@ -43,5 +43,12 @@ spec:
         - /spec/replicas   # HPA manages this at runtime
     - group: external-secrets.io
       kind: ExternalSecret
-      jsonPointers:
-        - /status          # ESO controller writes status fields not in template
+      jqPathExpressions:
+        - .status
+        - .spec.data[].remoteRef.conversionStrategy
+        - .spec.data[].remoteRef.decodingStrategy
+        - .spec.data[].remoteRef.metadataPolicy
+        - .spec.data[].remoteRef.nullBytePolicy
+        - .spec.dataFrom[].extract.conversionStrategy
+        - .spec.dataFrom[].extract.decodingStrategy
+        - .spec.dataFrom[].extract.metadataPolicy
