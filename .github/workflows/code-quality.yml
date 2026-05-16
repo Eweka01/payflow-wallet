@@ -19,7 +19,7 @@ jobs:
           node-version: "20"
 
       - name: Install ESLint
-        run: npm install --save-dev eslint
+        run: npm install --save-dev eslint @eslint/js globals
 
       - name: Run ESLint across all services
         run: |
