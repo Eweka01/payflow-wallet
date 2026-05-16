@@ -159,6 +159,23 @@ data:
             target_label: __address__
             replacement: ${1}:15692
         metrics_path: '/metrics'
+
+      # #### CoreDNS Metrics ####
+      # CoreDNS pods in kube-system expose metrics on port 9153.
+      # Labeled k8s-app=kube-dns — ClusterRole already grants pod discovery in any namespace.
+      - job_name: 'coredns'
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: ['kube-system']
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_k8s_app]
+            regex: kube-dns
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_ip]
+            target_label: __address__
+            replacement: ${1}:9153
+        metrics_path: '/metrics'
     
     # ============================================
     # ALERT MANAGER CONFIGURATION
