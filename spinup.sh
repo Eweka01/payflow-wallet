@@ -1,6 +1,6 @@
 #!/bin/bash
 # PayFlow infrastructure spin-up: backend, hub, EKS/AKS spoke, managed services, bastion, FinOps.
-# Run from repo root. Prompts for AWS (EKS) or Azure (AKS). Uses TF_WORKSPACE (default dev).
+# Run from repo root. Prompts for AWS (EKS) or Azure (AKS). Uses the Terraform default workspace.
 # For a plain-English explanation and list of issues we fixed, see SPINUP-AND-INFRA-FIXES.md.
 set -euo pipefail
 
@@ -23,18 +23,9 @@ if [ "$CLOUD" != "aws" ] && [ "$CLOUD" != "aks" ]; then
   exit 1
 fi
 
-# --- Choose workspace: dev or prod (matches Terraform workspaces) ---
-echo ""
-echo "  Which Terraform workspace (environment)?"
-echo "    dev   — development"
-echo "    prod  — production"
-echo ""
-read -p "  Enter dev or prod [dev]: " ENVIRONMENT
-ENVIRONMENT="${ENVIRONMENT:-dev}"
-if [ "$ENVIRONMENT" != "dev" ] && [ "$ENVIRONMENT" != "prod" ]; then
-  echo "[spinup] ERROR: Use 'dev' or 'prod'. Got: $ENVIRONMENT"
-  exit 1
-fi
+# Environment tag used in Secrets Manager paths (payflow/dev/*) — not a Terraform workspace.
+# This project uses a single Terraform default workspace; tfvars files handle env differences.
+ENVIRONMENT="dev"
 
 REGION="${AWS_REGION:-us-east-1}"
 
@@ -43,11 +34,8 @@ if [ "$CLOUD" = "aws" ]; then
   TFSTATE_BUCKET="payflow-tfstate-${ACCOUNT}"
 fi
 
-# FIX: Do NOT export TF_WORKSPACE globally — it conflicts with `terraform workspace select`
-# inside apply_module and causes Terraform to print the override warning then exit non-zero
-# under set -euo pipefail. Workspace selection is handled explicitly in apply_module instead.
 unset TF_WORKSPACE
-echo "[spinup] Environment: $ENVIRONMENT  (workspace selected per-module)"
+echo "[spinup] Environment: $ENVIRONMENT  region: $REGION  (using Terraform default workspace)"
 
 # On interrupt, remind how to fix a stuck state lock
 cleanup_on_interrupt() {
@@ -154,28 +142,19 @@ apply_module() {
   log "Applying $module — $description (allow ~${expected_mins} min)..."
   cd "$REPO_ROOT/$module"
 
-  # FIX: Unset TF_WORKSPACE before init/select so Terraform doesn't see a conflict
-  # between the env var and the explicit workspace select command below.
   unset TF_WORKSPACE
   terraform init -input=false -reconfigure
 
-  # Select workspace; create only if missing; if "new" fails (already exists), select again.
-  # FIX: Use || true guards so set -e doesn't abort on the expected non-zero exits from
-  # workspace commands when the workspace already exists or doesn't yet.
-  terraform workspace select "$ENVIRONMENT" 2>/dev/null \
-    || terraform workspace new "$ENVIRONMENT" 2>/dev/null \
-    || terraform workspace select "$ENVIRONMENT" \
-    || error "Could not select or create workspace '$ENVIRONMENT' in $module"
+  # Always use the default workspace — no named workspaces.
+  # State is stored directly at the key path in backend.tf (e.g. aws/hub-vpc/terraform.tfstate).
+  terraform workspace select default 2>/dev/null || true
 
   while [ $attempt -lt $max_retries ]; do
     attempt=$((attempt + 1))
     log "Attempt $attempt/$max_retries: $module"
 
-    # FIX: Wrap plan+apply in a subshell so a failure doesn't trigger set -e on the outer
-    # shell before we can retry. Capture exit code explicitly instead.
     if (
       terraform plan -input=false -out=/tmp/apply.plan \
-        -var="environment=$ENVIRONMENT" \
         ${extra_vars:+ $extra_vars} \
       && terraform apply -input=false /tmp/apply.plan
     ); then
@@ -214,7 +193,7 @@ import_spoke_drift_if_exists() {
   cd "$REPO_ROOT/terraform/aws/spoke-vpc-eks"
   unset TF_WORKSPACE
   terraform init -input=false -reconfigure 2>/dev/null || true
-  terraform workspace select "$ENVIRONMENT" 2>/dev/null || terraform workspace new "$ENVIRONMENT" 2>/dev/null || true
+  terraform workspace select default 2>/dev/null || true
 
   # CloudWatch log group for VPC flow logs
   local log_group="/aws/vpc-flow-logs/${cluster}"
@@ -225,7 +204,6 @@ import_spoke_drift_if_exists() {
       --output text 2>/dev/null | grep -q .; then
     log "CloudWatch log group already exists — importing to Terraform state: $log_group"
     terraform import \
-      -var="environment=$ENVIRONMENT" \
       aws_cloudwatch_log_group.flow_logs \
       "$log_group" 2>/dev/null || log "  Already in state, skipping."
   fi
@@ -240,7 +218,6 @@ import_spoke_drift_if_exists() {
   if [ -n "$flow_log_id" ] && [ "$flow_log_id" != "None" ]; then
     log "VPC flow log already exists — importing to Terraform state: $flow_log_id"
     terraform import \
-      -var="environment=$ENVIRONMENT" \
       aws_flow_log.eks \
       "$flow_log_id" 2>/dev/null || log "  Already in state, skipping."
   fi
@@ -249,14 +226,13 @@ import_spoke_drift_if_exists() {
 }
 
 # Auto-import the node access entry if EKS already created it.
-# Called after spoke-vpc-eks apply so we don't get 409 on re-runs.
 import_node_access_entry_if_exists() {
   local cluster="payflow-eks-cluster"
   local node_role_arn="arn:aws:iam::${ACCOUNT}:role/payflow-eks-node-role"
 
   cd "$REPO_ROOT/terraform/aws/spoke-vpc-eks"
   unset TF_WORKSPACE
-  terraform workspace select "$ENVIRONMENT" 2>/dev/null || true
+  terraform workspace select default 2>/dev/null || true
 
   if aws eks describe-access-entry \
       --cluster-name "$cluster" \
@@ -264,19 +240,18 @@ import_node_access_entry_if_exists() {
       --region "$REGION" &>/dev/null; then
     log "Node access entry already exists in EKS — importing to Terraform state..."
     terraform import \
-      -var="environment=$ENVIRONMENT" \
       aws_eks_access_entry.node_role \
       "${cluster}:${node_role_arn}" 2>/dev/null || log "Already in state, skipping import."
   fi
   cd "$REPO_ROOT"
 }
 
-# Auto-import bastion IAM role and instance profile if they already exist (avoids 409 on re-run with empty state).
+# Auto-import bastion IAM role and instance profile if they already exist (avoids 409 on re-run).
 import_bastion_if_exists() {
   cd "$REPO_ROOT/terraform/aws/bastion"
   unset TF_WORKSPACE
   terraform init -input=false -reconfigure 2>/dev/null || true
-  terraform workspace select "$ENVIRONMENT" 2>/dev/null || terraform workspace new "$ENVIRONMENT" 2>/dev/null || true
+  terraform workspace select default 2>/dev/null || true
 
   if aws iam get-role --role-name payflow-bastion-role &>/dev/null; then
     log "Bastion IAM role already exists — importing to Terraform state..."
@@ -297,7 +272,7 @@ fi
 # --- AWS (EKS) path: bootstrap backend then apply modules in order ---
 bootstrap_backend
 
-log "Using workspace: $ENVIRONMENT  region: $REGION  bucket: $TFSTATE_BUCKET"
+log "Using default workspace  region: $REGION  bucket: $TFSTATE_BUCKET"
 
 # 1) Hub VPC
 apply_module "terraform/aws/hub-vpc" "Hub VPC, TGW" 3
