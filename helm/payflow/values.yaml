@@ -24,10 +24,10 @@ services:
     resources:
       requests:
         memory: "256Mi"
-        cpu: "200m"
+        cpu: "100m"
       limits:
         memory: "512Mi"
-        cpu: "400m"
+        cpu: "300m"
     hpa:
       min: 2
       max: 10
@@ -40,10 +40,10 @@ services:
     resources:
       requests:
         memory: "256Mi"
-        cpu: "200m"
+        cpu: "100m"
       limits:
         memory: "512Mi"
-        cpu: "400m"
+        cpu: "300m"
     hpa:
       min: 2
       max: 8
@@ -56,10 +56,10 @@ services:
     resources:
       requests:
         memory: "256Mi"
-        cpu: "200m"
+        cpu: "100m"
       limits:
         memory: "512Mi"
-        cpu: "400m"
+        cpu: "300m"
     hpa:
       min: 2
       max: 8
@@ -72,10 +72,10 @@ services:
     resources:
       requests:
         memory: "256Mi"
-        cpu: "200m"
+        cpu: "100m"
       limits:
         memory: "512Mi"
-        cpu: "400m"
+        cpu: "300m"
     hpa:
       min: 2
       max: 10
@@ -88,10 +88,10 @@ services:
     resources:
       requests:
         memory: "256Mi"
-        cpu: "200m"
+        cpu: "100m"
       limits:
         memory: "512Mi"
-        cpu: "400m"
+        cpu: "300m"
     hpa:
       min: 2
       max: 6
