@@ -7,7 +7,7 @@ set -euo pipefail
 # Prevent AWS CLI from using a pager (e.g. less) so script doesn't appear stuck on create-table etc.
 export AWS_PAGER=""
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 # --- Choose cloud: AWS (EKS) or Azure (AKS) ---

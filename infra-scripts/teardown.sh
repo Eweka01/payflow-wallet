@@ -13,7 +13,7 @@ set -euo pipefail
 
 export AWS_PAGER=""
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 # --- Choose cloud ---

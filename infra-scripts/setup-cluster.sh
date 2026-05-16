@@ -50,7 +50,7 @@ done
 # ── Config ────────────────────────────────────────────────────────────────────
 REGION="${AWS_REGION:-us-east-1}"
 CLUSTER_NAME="${EKS_CLUSTER_NAME:-payflow-eks-cluster}"
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # ── Pre-flight ────────────────────────────────────────────────────────────────
 banner "PRE-FLIGHT CHECKS"
