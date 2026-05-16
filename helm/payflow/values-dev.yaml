@@ -7,7 +7,7 @@
 
 global:
   environment: dev
-  imageTag: latest  # ArgoCD Image Updater will update this per-push
+  imageTag: 86d6e59ac70e697cdeeeff71aca372b267b55342
 
 externalSecrets:
   environment: dev  # Resolves to payflow/dev/ in Secrets Manager
