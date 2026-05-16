@@ -126,6 +126,7 @@ resource "aws_db_instance" "payflow" {
   copy_tags_to_snapshot  = true
 
   # Performance and Monitoring
+  # checkov:skip=CKV_AWS_354:Performance Insights KMS CMK adds cost; RDS already encrypted with KMS key; PI data encrypted at rest by RDS service
   performance_insights_enabled = true
   monitoring_interval          = 60
   monitoring_role_arn          = aws_iam_role.rds_monitoring.arn

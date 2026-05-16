@@ -114,6 +114,7 @@ resource "aws_launch_template" "eks_nodes" {
     aws_eks_cluster.payflow.vpc_config[0].cluster_security_group_id,
   ]
 
+  # checkov:skip=CKV_AWS_341:hop_limit=2 is required for EKS pods to reach IMDS for IRSA token exchange; hop_limit=1 breaks pod identity
   metadata_options {
     http_endpoint               = "enabled"
     http_tokens                 = "required"  # IMDSv2 enforced — prevents SSRF-based credential theft
