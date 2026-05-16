@@ -58,17 +58,12 @@ spec:
                   name: app-config
                   key: CORS_ORIGIN
                   optional: true
-            # Credentials from ESO-managed Secret
+            # Credentials from ESO-managed Secret (REDIS_URL included via payflow.dbEnv below)
             - name: JWT_SECRET
               valueFrom:
                 secretKeyRef:
                   name: db-secrets
                   key: JWT_SECRET
-            - name: REDIS_URL
-              valueFrom:
-                secretKeyRef:
-                  name: db-secrets
-                  key: REDIS_URL
             {{- include "payflow.dbEnv" . | nindent 12 }}
             - name: NODE_ENV
               value: "production"
