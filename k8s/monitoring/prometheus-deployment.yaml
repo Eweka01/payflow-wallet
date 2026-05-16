@@ -63,6 +63,10 @@ spec:
         app: prometheus
     spec:
       serviceAccountName: prometheus  # Required for kubernetes_sd_configs pod discovery (see prometheus-rbac.yaml)
+      securityContext:
+        fsGroup: 65534
+        runAsUser: 65534
+        runAsNonRoot: true
       containers:
         - name: prometheus
           image: prom/prometheus:v2.47.0
