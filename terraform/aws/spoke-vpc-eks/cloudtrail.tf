@@ -5,6 +5,8 @@
 resource "aws_s3_bucket" "cloudtrail" {
   # checkov:skip=CKV_AWS_18:Access logging requires a dedicated logging bucket; adds cost/complexity not warranted for portfolio demo
   # checkov:skip=CKV_AWS_144:Cross-region replication not required; versioning enabled for state recovery
+  # checkov:skip=CKV2_AWS_6:Public access block is applied via aws_s3_bucket_public_access_block; Checkov cannot resolve cross-resource linkage
+  # checkov:skip=CKV2_AWS_62:S3 event notifications require SNS/SQS/Lambda target; CloudTrail and CW Logs already provide audit coverage
   bucket        = "${var.eks_cluster_name}-cloudtrail-${data.aws_caller_identity.current.account_id}"
   force_destroy = true  # Empty and delete on destroy (teardown)
 
@@ -120,6 +122,7 @@ resource "aws_sns_topic" "cloudtrail" {
 # CloudTrail
 resource "aws_cloudtrail" "eks" {
   # checkov:skip=CKV_AWS_35:S3 bucket uses KMS encryption (config_cloudtrail key); additional CloudTrail KMS key adds cost and management overhead
+  # checkov:skip=CKV2_AWS_10:CloudWatch Logs integration requires a dedicated IAM role and log group; planned for production deployment
   name                          = "${var.eks_cluster_name}-cloudtrail"
   s3_bucket_name                = aws_s3_bucket.cloudtrail.id
   sns_topic_name                = aws_sns_topic.cloudtrail.arn

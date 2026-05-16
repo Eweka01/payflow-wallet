@@ -36,6 +36,7 @@ data "aws_ec2_transit_gateway" "hub" {
 
 # Spoke VPC for EKS
 resource "aws_vpc" "eks" {
+  # checkov:skip=CKV2_AWS_12:Default SG managed separately; no workloads use the default SG — explicit SGs used for all resources
   cidr_block           = var.eks_vpc_cidr
   enable_dns_hostnames = true
   enable_dns_support   = true

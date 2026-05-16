@@ -3,6 +3,8 @@
 
 # Route53 Hosted Zone
 resource "aws_route53_zone" "payflow" {
+  # checkov:skip=CKV2_AWS_38:DNSSEC requires a key signing key (KSK) and multi-step activation; planned for production deployment
+  # checkov:skip=CKV2_AWS_39:Route53 query logging requires CloudWatch in us-east-1 specifically; adds cost not justified for portfolio demo
   count = var.domain_name != "" ? 1 : 0
   name  = var.domain_name
 

@@ -47,6 +47,7 @@ resource "aws_security_group" "elasticache" {
 resource "aws_elasticache_replication_group" "payflow" {
   # checkov:skip=CKV_AWS_31:Auth token requires cluster recreation; transit_encryption_enabled=true; auth token planned for production deployment
   # checkov:skip=CKV_AWS_191:at_rest_encryption_enabled=true uses AWS managed key; KMS CMK adds cost not justified for portfolio demo
+  # checkov:skip=CKV2_AWS_50:Multi-AZ failover not required for dev environment; enabled via var.automatic_failover_enabled for prod
   replication_group_id       = "payflow-redis"
   description                = "PayFlow Redis cache cluster"
 

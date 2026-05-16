@@ -17,6 +17,8 @@ provider "aws" {
 
 # Hub VPC
 resource "aws_vpc" "hub" {
+  # checkov:skip=CKV2_AWS_11:Flow logging not enabled on hub transit VPC; EKS spoke VPC has full flow logging; hub is bastion-only
+  # checkov:skip=CKV2_AWS_12:Default SG managed separately; no workloads use the default SG — explicit SGs used for all resources
   cidr_block           = var.hub_vpc_cidr
   enable_dns_hostnames = true
   enable_dns_support   = true

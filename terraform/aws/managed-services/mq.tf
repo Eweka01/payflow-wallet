@@ -97,6 +97,7 @@ resource "aws_mq_broker" "payflow" {
 
 # KMS Key for Amazon MQ Encryption
 resource "aws_kms_key" "mq" {
+  # checkov:skip=CKV2_AWS_64:KMS key uses default AWS account root policy; explicit key policy planned for production
   description             = "KMS key for Amazon MQ encryption"
   deletion_window_in_days = 10
   enable_key_rotation     = true

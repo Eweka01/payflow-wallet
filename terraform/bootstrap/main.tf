@@ -33,6 +33,8 @@ resource "aws_s3_bucket" "tfstate" {
   # checkov:skip=CKV_AWS_18:Access logging requires a dedicated logging bucket; adds cost/complexity not warranted for a state-only bucket
   # checkov:skip=CKV_AWS_144:Cross-region replication not required; versioning provides recovery capability
   # checkov:skip=CKV_AWS_145:Uses SSE-S3 (AES256); KMS CMK adds cost and management overhead for a non-data-serving bucket
+  # checkov:skip=CKV2_AWS_61:Lifecycle policy not required for Terraform state bucket; versioning provides recovery capability
+  # checkov:skip=CKV2_AWS_62:S3 event notifications not required for Terraform state bucket
   # Name includes account ID to guarantee global uniqueness
   bucket = "payflow-tfstate-${data.aws_caller_identity.current.account_id}"
 

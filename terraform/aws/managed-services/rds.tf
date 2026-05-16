@@ -80,6 +80,7 @@ resource "aws_iam_role_policy_attachment" "rds_monitoring" {
 
 # KMS Key for RDS Encryption
 resource "aws_kms_key" "rds" {
+  # checkov:skip=CKV2_AWS_64:KMS key uses default AWS account root policy; explicit key policy planned for production
   description             = "KMS key for RDS encryption"
   deletion_window_in_days = 10
   enable_key_rotation     = true  # Required for PCI-DSS compliance
@@ -127,6 +128,7 @@ resource "aws_db_instance" "payflow" {
 
   # Performance and Monitoring
   # checkov:skip=CKV_AWS_354:Performance Insights KMS CMK adds cost; RDS already encrypted with KMS key; PI data encrypted at rest by RDS service
+  # checkov:skip=CKV2_AWS_30:postgresql log export enabled; full log_statement=all would be too verbose and may log sensitive query data
   performance_insights_enabled = true
   monitoring_interval          = 60
   monitoring_role_arn          = aws_iam_role.rds_monitoring.arn
