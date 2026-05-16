@@ -62,10 +62,10 @@ metadata:
     {{- include "payflow.labels" . | nindent 4 }}
     app: {{ $svc }}
 spec:
-  type: ClusterIP
+  type: LoadBalancer
   selector:
     app: {{ $svc }}
   ports:
     - protocol: TCP
-      port: {{ $cfg.port }}
+      port: 80
       targetPort: {{ $cfg.port }}
