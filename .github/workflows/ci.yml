@@ -147,9 +147,7 @@ jobs:
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         run: |
           IMAGE=${{ env.ECR_REGISTRY }}/${{ env.ECR_PREFIX }}/${{ matrix.service }}
-          docker tag  ${IMAGE}:${{ github.sha }} ${IMAGE}:latest
           docker push ${IMAGE}:${{ github.sha }}
-          docker push ${IMAGE}:latest
           echo "Pushed ${IMAGE}:${{ github.sha }}"
 
 # ──────────────────────────────────────────────────────────────────────────────
