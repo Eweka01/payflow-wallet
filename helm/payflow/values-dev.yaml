@@ -7,7 +7,18 @@
 
 global:
   environment: dev
-  imageTag: 9d34a3b520db74502193a2e7f8969a199de7b241
+  # imageTag is managed by ArgoCD Image Updater — do not set manually here.
+  # Image Updater watches ECR and sets global.imageTag via Helm parameter override
+  # when a new tag (format: YYYYMMDDHHMMSS-<sha7>) appears.
 
 externalSecrets:
   environment: dev  # Resolves to payflow/dev/ in Secrets Manager
+
+# ALB Ingress — fill these from Terraform outputs after spinup:
+#   WAF_ARN=$(terraform -chdir=terraform/aws/spoke-vpc-eks output -raw waf_web_acl_arn)
+#   ACM_ARN=$(terraform -chdir=terraform/aws/spoke-vpc-eks output -raw acm_certificate_arn 2>/dev/null || echo "")
+#   Then update this file with those values and commit.
+ingress:
+  enabled: true
+  wafArn: "arn:aws:wafv2:us-east-1:470439679607:regional/webacl/payflow-dev-waf/12ba323c-15a2-4f25-b35a-9626edafc5e6"
+  certificateArn: ""  # No ACM cert provisioned — ALB serves HTTP only
