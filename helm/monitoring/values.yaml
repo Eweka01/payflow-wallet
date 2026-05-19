@@ -428,6 +428,11 @@ prometheus:
 # loki-stack overrides
 # ============================================================
 loki:
+  grafana:
+    sidecar:
+      datasources:
+        enabled: false  # loki-stack's auto-datasource sets isDefault:true which conflicts with Prometheus
+
   loki:
     enabled: true
     persistence:
