@@ -7,6 +7,7 @@ metadata:
     {{- include "payflow.labels" . | nindent 4 }}
   annotations:
     argocd.argoproj.io/sync-wave: "2"  # runs after ESO has synced db-secrets (wave 1)
+    argocd.argoproj.io/sync-options: Replace=true  # Job spec is immutable; replace instead of patch
 spec:
   backoffLimit: 3
   ttlSecondsAfterFinished: 3600
