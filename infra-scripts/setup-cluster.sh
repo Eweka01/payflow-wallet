@@ -294,8 +294,33 @@ else
   fi
 fi
 
-# ── Step 4 — metrics-server ──────────────────────────────────────────────────
-banner "STEP 4 — metrics-server"
+# ── Step 4 — AWS Load Balancer Controller ────────────────────────────────────
+# Required for Ingress objects to create ALBs.  Without this, the frontend
+# Ingress exists in Kubernetes but no real ALB is ever created — the app
+# is unreachable from the internet.
+banner "STEP 4 — AWS Load Balancer Controller"
+ALB_ROLE_ARN="arn:aws:iam://\${ACCOUNT}:role/\${CLUSTER_NAME}-alb-controller-irsa"
+VPC_ID=\$(aws eks describe-cluster --name "\$CLUSTER_NAME" --region "\$REGION" \
+  --query "cluster.resourcesVpcConfig.vpcId" --output text 2>/dev/null || echo "")
+
+if kubectl get deployment aws-load-balancer-controller -n kube-system &>/dev/null; then
+  warn "AWS Load Balancer Controller already installed"
+else
+  helm repo add eks https://aws.github.io/eks-charts 2>/dev/null || true
+  helm repo update 2>&1 | grep -E 'Update|Successfully|error' || true
+  helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
+    --namespace kube-system \
+    --set clusterName="\$CLUSTER_NAME" \
+    --set serviceAccount.create=true \
+    --set "serviceAccount.annotations.eks\.amazonaws\.com/role-arn=\$ALB_ROLE_ARN" \
+    --set region="\$REGION" \
+    --set vpcId="\$VPC_ID" \
+    --wait --timeout 5m 2>&1 | tail -5
+  success "AWS Load Balancer Controller installed"
+fi
+
+# ── Step 4b — metrics-server ─────────────────────────────────────────────────
+banner "STEP 4b — metrics-server"
 if kubectl get deployment metrics-server -n kube-system &>/dev/null; then
   warn "metrics-server already installed"
 else
@@ -325,14 +350,28 @@ metadata:
 data:
   ecr-creds: |
     #!/bin/sh
-    aws ecr get-login-password --region \${REGION}
+    printf "AWS:%s" "$(aws ecr get-login-password --region \${REGION})"
 ECREOF
 kubectl apply -f /tmp/ecr-creds-cm.yaml
 success "ECR credentials ConfigMap applied"
 
 # helm upgrade --install is idempotent: installs on first run, upgrades on re-runs.
-# extraVolumes/extraVolumeMounts mount the ConfigMap as an executable file so
-# Image Updater can call it.  defaultMode 493 = octal 0755 (executable).
+# The chart uses "volumes" / "volumeMounts" (not extraVolumes/extraVolumeMounts).
+# defaultMode 493 = octal 0755 (executable).
+# Passing complex arrays via --set doesn't work reliably for nested objects,
+# so we write a values file and use -f instead.
+cat > /tmp/iu-helm-values.yaml << IUEOF
+volumes:
+  - name: ecr-creds-script
+    configMap:
+      name: ecr-creds-script
+      defaultMode: 493
+volumeMounts:
+  - name: ecr-creds-script
+    mountPath: /usr/local/bin/argocd-image-updater-ecr-creds
+    subPath: ecr-creds
+IUEOF
+
 helm upgrade --install argocd-image-updater argocd-image-updater \
   --repo https://argoproj.github.io/argo-helm \
   --namespace argocd \
@@ -342,12 +381,7 @@ helm upgrade --install argocd-image-updater argocd-image-updater \
   --set "config.registries[0].prefix=\${ACCOUNT}.dkr.ecr.\${REGION}.amazonaws.com" \
   --set "config.registries[0].credentials=ext:/usr/local/bin/argocd-image-updater-ecr-creds" \
   --set "config.registries[0].credsexpire=10h" \
-  --set "extraVolumes[0].name=ecr-creds-script" \
-  --set "extraVolumes[0].configMap.name=ecr-creds-script" \
-  --set "extraVolumes[0].configMap.defaultMode=493" \
-  --set "extraVolumeMounts[0].name=ecr-creds-script" \
-  --set "extraVolumeMounts[0].mountPath=/usr/local/bin/argocd-image-updater-ecr-creds" \
-  --set "extraVolumeMounts[0].subPath=ecr-creds" \
+  -f /tmp/iu-helm-values.yaml \
   --version 0.9.6 \
   --wait --timeout 5m 2>&1 | tail -5
 success "Image Updater installed with ECR credentials volume mount"
