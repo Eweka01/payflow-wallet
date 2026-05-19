@@ -1,8 +1,0 @@
-# When using resource-patch (replicas: 1), PDB minAvailable must be 1 or node drain is blocked.
-apiVersion: policy/v1
-kind: PodDisruptionBudget
-metadata:
-  name: transaction-service-pdb
-  namespace: payflow
-spec:
-  minAvailable: 1

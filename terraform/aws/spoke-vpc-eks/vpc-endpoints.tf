@@ -36,6 +36,14 @@ resource "aws_security_group" "vpc_endpoints" {
     description     = "HTTPS from EKS nodes"
   }
 
+  ingress {
+    from_port       = 443
+    to_port         = 443
+    protocol        = "tcp"
+    security_groups = [aws_security_group.argocd_webhook_lambda.id]
+    description     = "HTTPS from webhook Lambda to Secrets Manager endpoint"
+  }
+
   egress {
     description = "Outbound for VPC endpoint health checks and responses"
     from_port   = 0

@@ -472,6 +472,55 @@ resource "aws_iam_role_policy" "cluster_autoscaler" {
   })
 }
 
+# ArgoCD Image Updater IRSA Role
+# Needs ECR read access to list and describe image tags across all service repos.
+resource "aws_iam_role" "image_updater_irsa" {
+  name = "${var.eks_cluster_name}-image-updater-irsa"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Principal = {
+        Federated = aws_iam_openid_connect_provider.eks.arn
+      }
+      Action = "sts:AssumeRoleWithWebIdentity"
+      Condition = {
+        StringEquals = {
+          "${local.oidc_url}:sub" = "system:serviceaccount:argocd:argocd-image-updater"
+          "${local.oidc_url}:aud" = "sts.amazonaws.com"
+        }
+      }
+    }]
+  })
+
+  depends_on = [aws_iam_openid_connect_provider.eks]
+
+  tags = { Name = "${var.eks_cluster_name}-image-updater-irsa" }
+}
+
+resource "aws_iam_role_policy" "image_updater" {
+  # checkov:skip=CKV_AWS_355:ECR describe/list actions require * resource; no resource-level permissions available
+  name = "${var.eks_cluster_name}-image-updater-policy"
+  role = aws_iam_role.image_updater_irsa.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "ecr:GetAuthorizationToken",
+        "ecr:BatchGetImage",
+        "ecr:GetDownloadUrlForLayer",
+        "ecr:DescribeImages",
+        "ecr:DescribeRepositories",
+        "ecr:ListImages",
+      ]
+      Resource = "*"
+    }]
+  })
+}
+
 # Wait for IRSA roles to propagate
 resource "time_sleep" "wait_for_irsa" {
   depends_on = [
@@ -480,7 +529,8 @@ resource "time_sleep" "wait_for_irsa" {
     aws_iam_role.external_dns_irsa,
     aws_iam_role.ebs_csi_irsa,
     aws_iam_role.cluster_autoscaler_irsa,
+    aws_iam_role.image_updater_irsa,
   ]
-  create_duration = "60s"   # was 20s
+  create_duration = "60s"
 }
 

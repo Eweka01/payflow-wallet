@@ -49,20 +49,12 @@ data "aws_security_groups" "eks_nodes" {
   }
 }
 
-data "terraform_remote_state" "spoke" {
-  count   = var.tfstate_bucket != "" ? 1 : 0
-  backend = "s3"
-
-  config = {
-    bucket = var.tfstate_bucket
-    key    = "env:/${terraform.workspace}/aws/eks/terraform.tfstate"
-    region = var.aws_region
-  }
-}
-
 locals {
-  # Match spoke-vpc-eks secret paths (payflow/<workspace>/...) so ESO can sync
-  env = terraform.workspace
+  # env comes from var.environment (set in terraform.tfvars), NOT terraform.workspace.
+  # spoke-vpc-eks also uses var.environment for secret paths and SG naming.
+  # Using terraform.workspace would give "default" with spinup.sh, breaking secret
+  # path alignment (payflow/default/... vs payflow/dev/...) and SG tag lookups.
+  env = var.environment
   # Only use SG IDs that exist in AWS (lookup by tag); never use API/state IDs that may be stale
   eks_sg_id      = length(data.aws_security_groups.eks_cluster_sg.ids) > 0 ? data.aws_security_groups.eks_cluster_sg.ids[0] : null
   eks_node_sg_id = length(data.aws_security_groups.eks_nodes.ids) > 0 ? data.aws_security_groups.eks_nodes.ids[0] : null

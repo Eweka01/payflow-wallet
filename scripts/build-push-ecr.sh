@@ -9,7 +9,7 @@
 #        IMAGE_TAG=v7 ./scripts/build-push-ecr.sh
 # Default tag: latest (or pass e.g. v7 for immutable releases)
 #
-# Then deploy: cd k8s/overlays/eks && IMAGE_TAG=v7 ./deploy.sh
+# Then update helm/payflow/values-dev.yaml imageTag and push — ArgoCD will deploy automatically.
 
 set -e
 
@@ -52,5 +52,5 @@ done
 echo "All images built and pushed."
 echo ""
 echo "Deploy with:"
-echo "  cd k8s/overlays/eks && IMAGE_TAG=${IMAGE_TAG} ./deploy.sh"
+echo "  Update imageTag: ${IMAGE_TAG} in helm/payflow/values-dev.yaml and push — ArgoCD will sync automatically."
 echo ""

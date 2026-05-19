@@ -154,6 +154,28 @@ resource "aws_ecr_repository" "notification_service" {
   }
 }
 
+# ECR Repository for DB Migrations (Flyway image with versioned SQL files baked in)
+resource "aws_ecr_repository" "db_migrations" {
+  name                 = "${var.eks_cluster_name}/db-migrations"
+  image_tag_mutability = "IMMUTABLE"
+  force_delete         = true
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  encryption_configuration {
+    encryption_type = "KMS"
+    kms_key         = aws_kms_key.ecr.arn
+  }
+
+  tags = {
+    Name        = "${var.eks_cluster_name}-db-migrations"
+    Environment = var.environment
+    Service     = "db-migrations"
+  }
+}
+
 # ECR Repository for Frontend
 resource "aws_ecr_repository" "frontend" {
   name                 = "${var.eks_cluster_name}/frontend"
@@ -179,12 +201,13 @@ resource "aws_ecr_repository" "frontend" {
 # ECR Lifecycle Policy - Keep last 10 images, delete older
 resource "aws_ecr_lifecycle_policy" "default" {
   for_each = {
-    api_gateway        = aws_ecr_repository.api_gateway.name
-    auth_service       = aws_ecr_repository.auth_service.name
-    wallet_service     = aws_ecr_repository.wallet_service.name
-    transaction_service = aws_ecr_repository.transaction_service.name
+    api_gateway          = aws_ecr_repository.api_gateway.name
+    auth_service         = aws_ecr_repository.auth_service.name
+    wallet_service       = aws_ecr_repository.wallet_service.name
+    transaction_service  = aws_ecr_repository.transaction_service.name
     notification_service = aws_ecr_repository.notification_service.name
-    frontend           = aws_ecr_repository.frontend.name
+    frontend             = aws_ecr_repository.frontend.name
+    db_migrations        = aws_ecr_repository.db_migrations.name
   }
 
   repository = each.value

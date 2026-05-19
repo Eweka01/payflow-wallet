@@ -1,0 +1,84 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: transaction-timeout-handler
+  namespace: payflow
+  labels:
+    {{- include "payflow.labels" . | nindent 4 }}
+spec:
+  schedule: "* * * * *"   # every minute
+  concurrencyPolicy: Forbid  # skip if previous run still going
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            cronjob: transaction-timeout-handler  # matched by network policy
+        spec:
+          restartPolicy: OnFailure
+          dnsPolicy: ClusterFirst
+          containers:
+          - name: transaction-timeout-container
+            image: postgres:16-alpine
+            securityContext:
+              allowPrivilegeEscalation: false
+            resources:
+              requests:
+                cpu: "50m"
+                memory: "64Mi"
+              limits:
+                cpu: "100m"
+                memory: "128Mi"
+            command: ['sh', '-c']
+            args:
+            - |
+              psql -h "$PGHOST" -p "${PGPORT:-5432}" -U $PGUSER -d $PGDATABASE << EOF
+              UPDATE transactions
+              SET status = 'FAILED',
+                  error_message = 'Transaction timeout - automatically reversed by system (' || NOW() || ')',
+                  completed_at = CURRENT_TIMESTAMP,
+                  processing_started_at = COALESCE(processing_started_at, created_at)
+              WHERE status = 'PENDING'
+                AND created_at < NOW() - INTERVAL '10 minutes';
+
+              UPDATE transactions
+              SET status = 'FAILED',
+                  error_message = 'Processing timeout - worker did not complete (' || NOW() || ')',
+                  completed_at = CURRENT_TIMESTAMP,
+                  processing_started_at = COALESCE(processing_started_at, created_at)
+              WHERE status = 'PROCESSING'
+                AND processing_started_at < NOW() - INTERVAL '10 minutes';
+
+              SELECT COUNT(*) as reversed_count FROM transactions
+              WHERE status = 'FAILED'
+                AND error_message LIKE '%automatically reversed%'
+                AND completed_at > NOW() - INTERVAL '1 minute';
+              EOF
+            env:
+            - name: PGHOST
+              valueFrom:
+                secretKeyRef:
+                  name: db-secrets
+                  key: DB_HOST
+            - name: PGPORT
+              valueFrom:
+                secretKeyRef:
+                  name: db-secrets
+                  key: DB_PORT
+            - name: PGDATABASE
+              valueFrom:
+                configMapKeyRef:
+                  name: app-config
+                  key: DB_NAME
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: db-secrets
+                  key: DB_USER
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: db-secrets
+                  key: DB_PASSWORD

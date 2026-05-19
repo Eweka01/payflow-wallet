@@ -1,4 +1,22 @@
 # Default values — environment-specific overrides go in values-dev.yaml
+
+# ALB Ingress — internet-facing Application Load Balancer with WAF
+# The ALB Controller merges the two Ingress objects (api + frontend) into one ALB
+# via group.name: payflow.
+#
+# wafArn:         get with: terraform -chdir=terraform/aws/spoke-vpc-eks output -raw waf_web_acl_arn
+# certificateArn: get with: terraform -chdir=terraform/aws/spoke-vpc-eks output -raw acm_certificate_arn
+#                 leave empty for HTTP-only (no TLS) — ALB will only listen on port 80
+ingress:
+  enabled: true
+  wafArn: ""          # required — WAF Web ACL ARN from Terraform output
+  certificateArn: ""  # optional — ACM cert ARN; leave empty for HTTP-only dev
+
+# Postgres backup CronJob + PVC
+backup:
+  schedule: "0 2 * * *"          # daily at 2 AM UTC
+  storageSize: 10Gi
+  storageClassName: gp2           # EKS: gp2 or gp3 | local/minikube: microk8s-hostpath
 global:
   environment: dev
   registry: 470439679607.dkr.ecr.us-east-1.amazonaws.com

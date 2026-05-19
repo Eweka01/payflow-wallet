@@ -153,6 +153,7 @@ resource "aws_instance" "bootstrap" {
     alb_irsa_arn                = var.alb_irsa_arn
     external_secrets_irsa_arn   = var.external_secrets_irsa_arn
     cluster_autoscaler_irsa_arn = var.cluster_autoscaler_irsa_arn
+    image_updater_irsa_arn      = var.image_updater_irsa_arn
     enable_external_dns         = local.enable_ext_dns
     external_dns_irsa_arn       = var.external_dns_irsa_arn
     domain_name                 = var.domain_name

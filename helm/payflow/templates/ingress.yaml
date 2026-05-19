@@ -1,0 +1,104 @@
+{{- if .Values.ingress.enabled }}
+{{/*
+  Two Ingress objects sharing group.name: payflow so the AWS LB Controller
+  merges them into a SINGLE internet-facing ALB with two target groups:
+    - /api and /health  -> api-gateway  (healthcheck: /health)
+    - /                 -> frontend     (healthcheck: /)
+
+  The split is required because the ALB Controller only allows one healthcheck
+  path per Ingress object; merging them via group.name gives us one ALB.
+
+  WAF attaches via the wafv2-acl-arn annotation — this is what makes the WAF
+  actually protect traffic (it was unattached when only a Classic ELB existed).
+
+  When ingress.certificateArn is empty the TLS annotations are omitted and the
+  ALB listens on HTTP:80 only (dev without ACM cert).
+  When ingress.certificateArn is set the ALB listens on both ports and redirects
+  HTTP -> HTTPS automatically.
+*/}}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: payflow-ingress-api
+  namespace: payflow
+  labels:
+    {{- include "payflow.labels" . | nindent 4 }}
+  annotations:
+    alb.ingress.kubernetes.io/group.name: payflow
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: '30'
+    alb.ingress.kubernetes.io/healthcheck-timeout-seconds: '5'
+    alb.ingress.kubernetes.io/healthy-threshold-count: '2'
+    alb.ingress.kubernetes.io/unhealthy-threshold-count: '3'
+    {{- if .Values.ingress.wafArn }}
+    alb.ingress.kubernetes.io/wafv2-acl-arn: {{ .Values.ingress.wafArn | quote }}
+    {{- end }}
+    {{- if .Values.ingress.certificateArn }}
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+    alb.ingress.kubernetes.io/certificate-arn: {{ .Values.ingress.certificateArn | quote }}
+    alb.ingress.kubernetes.io/ssl-redirect: '443'
+    {{- else }}
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+    {{- end }}
+spec:
+  ingressClassName: alb
+  rules:
+  - http:
+      paths:
+      - path: /api
+        pathType: Prefix
+        backend:
+          service:
+            name: api-gateway
+            port:
+              number: 80
+      - path: /health
+        pathType: Prefix
+        backend:
+          service:
+            name: api-gateway
+            port:
+              number: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: payflow-ingress-frontend
+  namespace: payflow
+  labels:
+    {{- include "payflow.labels" . | nindent 4 }}
+  annotations:
+    alb.ingress.kubernetes.io/group.name: payflow
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/healthcheck-path: /
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: '30'
+    alb.ingress.kubernetes.io/healthcheck-timeout-seconds: '5'
+    alb.ingress.kubernetes.io/healthy-threshold-count: '2'
+    alb.ingress.kubernetes.io/unhealthy-threshold-count: '3'
+    {{- if .Values.ingress.wafArn }}
+    alb.ingress.kubernetes.io/wafv2-acl-arn: {{ .Values.ingress.wafArn | quote }}
+    {{- end }}
+    {{- if .Values.ingress.certificateArn }}
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+    alb.ingress.kubernetes.io/certificate-arn: {{ .Values.ingress.certificateArn | quote }}
+    alb.ingress.kubernetes.io/ssl-redirect: '443'
+    {{- else }}
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+    {{- end }}
+spec:
+  ingressClassName: alb
+  rules:
+  - http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: frontend
+            port:
+              number: 80
+{{- end }}

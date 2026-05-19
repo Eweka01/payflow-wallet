@@ -1,0 +1,6 @@
+FROM flyway/flyway:10-alpine
+
+# Copy versioned SQL files into the location Flyway reads by default.
+# When a developer adds V5__..., CI rebuilds this image automatically —
+# no changes needed in the Kubernetes Job.
+COPY migrations/ /flyway/sql/

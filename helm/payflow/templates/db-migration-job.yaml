@@ -1,0 +1,64 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-migration-job
+  namespace: payflow
+  labels:
+    {{- include "payflow.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"  # runs after ESO has synced db-secrets (wave 1)
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 3600
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: db-migration
+        # migrations image: flyway/flyway base + migrations/ SQL files baked in by CI.
+        # Adding a new migration = add a V5__*.sql file; CI rebuilds the image automatically.
+        image: {{ .Values.global.registry }}/{{ .Values.global.imagePrefix }}/db-migrations:{{ .Values.global.imageTag }}
+        securityContext:
+          allowPrivilegeEscalation: false
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "256Mi"
+        env:
+        - name: FLYWAY_URL
+          value: "jdbc:postgresql://$(DB_HOST):$(DB_PORT)/$(DB_NAME)?sslmode=require"
+        - name: FLYWAY_USER
+          valueFrom:
+            secretKeyRef:
+              name: db-secrets
+              key: DB_USER
+        - name: FLYWAY_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: db-secrets
+              key: DB_PASSWORD
+        - name: FLYWAY_BASELINE_ON_MIGRATE
+          value: "true"
+        - name: FLYWAY_CONNECT_RETRIES
+          value: "10"
+        - name: DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: db-secrets
+              key: DB_HOST
+        - name: DB_PORT
+          valueFrom:
+            secretKeyRef:
+              name: db-secrets
+              key: DB_PORT
+        - name: DB_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: DB_NAME
+        command:
+        - flyway
+        - migrate

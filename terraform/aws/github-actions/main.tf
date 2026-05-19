@@ -67,7 +67,7 @@ resource "aws_iam_role" "github_actions" {
 }
 
 # ── ECR Policy ────────────────────────────────────────────────────────────────
-# Allows CI to log in to ECR and push images for all 6 PayFlow services.
+# Allows CI to log in to ECR and push images for all 7 PayFlow service repos.
 # GetAuthorizationToken must be * (it is a global ECR action, not per-repo).
 
 data "aws_iam_policy_document" "ecr" {

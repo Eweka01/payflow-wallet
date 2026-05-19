@@ -1,0 +1,462 @@
+# PayFlow monitoring umbrella chart values
+# Overrides for kube-prometheus-stack (alias: prometheus) and loki-stack (alias: loki)
+
+# ============================================================
+# kube-prometheus-stack overrides
+# ============================================================
+prometheus:
+  # -- Grafana --
+  grafana:
+    enabled: true
+    service:
+      type: ClusterIP
+    # Load custom datasources (Prometheus + Loki)
+    additionalDataSources:
+      - name: Loki
+        type: loki
+        access: proxy
+        url: http://{{ .Release.Name }}-loki:3100
+        editable: true
+        jsonData:
+          maxLines: 1000
+    # Pick up the dashboard ConfigMap we create in templates/
+    sidecar:
+      dashboards:
+        enabled: true
+        label: grafana_dashboard
+        labelValue: "1"
+        searchNamespace: monitoring
+
+  # -- Prometheus --
+  prometheusOperator:
+    enabled: true
+
+  prometheus:
+    prometheusSpec:
+      # Scrape interval
+      scrapeInterval: 15s
+      evaluationInterval: 15s
+      # Pick up ServiceMonitors from all namespaces
+      serviceMonitorSelectorNilUsesHelmValues: false
+      podMonitorSelectorNilUsesHelmValues: false
+      # Custom scrape configs (static targets — services without ServiceMonitor)
+      additionalScrapeConfigs:
+        - job_name: 'api-gateway'
+          scrape_interval: 30s
+          scrape_timeout: 25s
+          static_configs:
+            - targets: ['api-gateway.payflow.svc.cluster.local:80']
+
+        - job_name: 'wallet-service'
+          static_configs:
+            - targets: ['wallet-service.payflow.svc.cluster.local:3001']
+
+        - job_name: 'transaction-service'
+          static_configs:
+            - targets: ['transaction-service.payflow.svc.cluster.local:3002']
+
+        - job_name: 'auth-service'
+          static_configs:
+            - targets: ['auth-service.payflow.svc.cluster.local:3004']
+
+        - job_name: 'notification-service'
+          static_configs:
+            - targets: ['notification-service.payflow.svc.cluster.local:3003']
+
+        - job_name: 'postgres-exporter'
+          scrape_interval: 45s
+          scrape_timeout: 40s
+          static_configs:
+            - targets: ['postgres-exporter.payflow.svc.cluster.local:9187']
+          relabel_configs:
+            - target_label: instance
+              replacement: 'postgres'
+
+        - job_name: 'redis'
+          scrape_interval: 30s
+          scrape_timeout: 25s
+          static_configs:
+            - targets: ['redis-exporter.payflow.svc.cluster.local:9121']
+
+        - job_name: 'rabbitmq'
+          scrape_interval: 30s
+          scrape_timeout: 25s
+          static_configs:
+            - targets: ['rabbitmq.payflow.svc.cluster.local:15692']
+          metric_relabel_configs:
+            - source_labels: [queue]
+              regex: 'transaction.*|notification.*'
+              action: keep
+
+        - job_name: 'kube-state-metrics'
+          static_configs:
+            - targets: ['kube-state-metrics.kube-system.svc.cluster.local:8080']
+          metric_relabel_configs:
+            - source_labels: [namespace]
+              regex: 'payflow|monitoring'
+              action: keep
+
+        - job_name: 'kube-dns'
+          kubernetes_sd_configs:
+            - role: pod
+              namespaces:
+                names:
+                  - kube-system
+          relabel_configs:
+            - source_labels: [__meta_kubernetes_pod_label_k8s_app]
+              action: keep
+              regex: kube-dns
+            - source_labels: [__meta_kubernetes_pod_container_port_name]
+              action: keep
+              regex: metrics
+            - source_labels: [__meta_kubernetes_namespace]
+              target_label: namespace
+            - source_labels: [__meta_kubernetes_pod_name]
+              target_label: pod
+
+      # Alert rules
+      additionalPrometheusRulesMap:
+        payflow-critical-business:
+          groups:
+            - name: payflow-critical-business
+              rules:
+                - alert: PendingTransactionsStuck
+                  expr: payflow_pending_transactions_total > 0
+                  for: 2m
+                  labels:
+                    severity: P0
+                    team: backend
+                  annotations:
+                    summary: "{{ $value }} transactions stuck in PENDING status"
+                    description: "User funds are locked! Immediate investigation required."
+
+                - alert: MoneyStuckInPendingTransactions
+                  expr: payflow_pending_transaction_amount_total > 1000
+                  for: 2m
+                  labels:
+                    severity: P0
+                    team: backend
+                  annotations:
+                    summary: "${{ $value }} stuck in pending transactions"
+                    description: "Real money is locked. Users cannot access funds."
+
+                - alert: OldestPendingTransactionTooOld
+                  expr: (time() - payflow_transactions_oldest_pending_timestamp) > 120
+                  for: 1m
+                  labels:
+                    severity: P0
+                    team: backend
+                  annotations:
+                    summary: "Oldest pending transaction is {{ $value | humanizeDuration }} old"
+                    description: "Expected auto-reversal after 1 minute. CronJob might be broken."
+
+                - alert: TransactionFailureRateHigh
+                  expr: |
+                    (
+                      rate(payflow_transactions_total{status="failed"}[5m])
+                      /
+                      rate(payflow_transactions_total[5m])
+                    ) > 0.05
+                  for: 2m
+                  labels:
+                    severity: critical
+                    team: backend
+                  annotations:
+                    summary: "{{ $value | humanizePercentage }} of transactions are failing"
+                    description: "Normal rate is <1%. Current: {{ $value | humanizePercentage }}"
+
+                - alert: NoTransactionsProcessed
+                  expr: rate(payflow_transactions_total[5m]) == 0
+                  for: 10m
+                  labels:
+                    severity: critical
+                    team: backend
+                  annotations:
+                    summary: "No transactions in last 10 minutes"
+                    description: "System appears dead or users can't transact"
+
+            - name: payflow-cronjob-health
+              rules:
+                - alert: TransactionTimeoutCronJobNotRunning
+                  expr: |
+                    (time() - max(kube_job_status_completion_time{job_name=~"transaction-timeout-handler.*"})) > 180
+                  for: 1m
+                  labels:
+                    severity: critical
+                    team: backend
+                  annotations:
+                    summary: "Transaction timeout CronJob hasn't run in 3+ minutes"
+                    description: "Expected every minute. Pending transactions won't be reversed!"
+
+                - alert: CronJobFailureRate
+                  expr: rate(kube_job_status_failed{job_name=~"transaction-timeout-handler.*"}[5m]) > 0
+                  for: 2m
+                  labels:
+                    severity: critical
+                    team: backend
+                  annotations:
+                    summary: "CronJob {{ $labels.job_name }} is failing"
+                    description: "{{ $value }} failures in last 5 minutes. Check pod logs."
+
+                - alert: CronJobSuspended
+                  expr: kube_cronjob_spec_suspend{cronjob="transaction-timeout-handler"} == 1
+                  for: 5m
+                  labels:
+                    severity: critical
+                    team: backend
+                  annotations:
+                    summary: "Transaction timeout CronJob is SUSPENDED"
+                    description: "Pending transactions won't be reversed!"
+
+            - name: payflow-service-health
+              rules:
+                - alert: ServiceDown
+                  expr: up{job=~"api-gateway|auth-service|wallet-service|transaction-service|notification-service"} == 0
+                  for: 1m
+                  labels:
+                    severity: critical
+                    team: backend
+                  annotations:
+                    summary: "Service {{ $labels.job }} is down"
+                    description: "Service {{ $labels.job }} has been down for more than 1 minute"
+
+                - alert: HighErrorRate
+                  expr: rate(http_requests_total{job=~"api-gateway|auth-service|wallet-service|transaction-service|notification-service",code=~"5.."}[5m]) > 0.1
+                  for: 2m
+                  labels:
+                    severity: warning
+                  annotations:
+                    summary: "High error rate for {{ $labels.job }}"
+                    description: "Error rate for {{ $labels.job }} is {{ $value }} errors per second"
+
+                - alert: HighResponseTime
+                  expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{job=~"api-gateway|auth-service|wallet-service|transaction-service|notification-service"}[5m])) > 1
+                  for: 3m
+                  labels:
+                    severity: warning
+                  annotations:
+                    summary: "High response time for {{ $labels.job }}"
+                    description: "95th percentile response time for {{ $labels.job }} is {{ $value }} seconds"
+
+                - alert: CoreDNSDown
+                  expr: up{job="kube-dns"} == 0
+                  for: 1m
+                  labels:
+                    severity: critical
+                    team: platform
+                  annotations:
+                    summary: "CoreDNS is DOWN"
+                    description: "DNS resolution broken. All service discovery will fail."
+
+                - alert: PodQuotaNearLimit
+                  expr: |
+                    (
+                      kube_resourcequota{namespace="payflow", type="used", resource="pods"}
+                      /
+                      kube_resourcequota{namespace="payflow", type="hard", resource="pods"}
+                    ) > 0.85
+                  for: 5m
+                  labels:
+                    severity: warning
+                    team: platform
+                  annotations:
+                    summary: "Pod quota at {{ $value | humanizePercentage }}"
+                    description: "Will hit limit soon. CronJobs will fail with 'exceeded quota' errors."
+
+                - alert: RabbitMQQueueBacklog
+                  expr: rabbitmq_queue_messages_ready{queue=~"transaction.*"} > 1000
+                  for: 5m
+                  labels:
+                    severity: warning
+                    team: backend
+                  annotations:
+                    summary: "RabbitMQ queue {{ $labels.queue }} has {{ $value }} messages"
+                    description: "Queue backlog building. Worker might be down or slow."
+
+                - alert: RabbitMQNoConsumers
+                  expr: rabbitmq_queue_consumers{queue=~"transaction.*"} == 0
+                  for: 2m
+                  labels:
+                    severity: critical
+                    team: backend
+                  annotations:
+                    summary: "RabbitMQ queue {{ $labels.queue }} has NO consumers"
+                    description: "Worker is down. Messages will pile up. Transactions won't process."
+
+                - alert: PostgreSQLConnectionsHigh
+                  expr: pg_stat_database_numbackends > 80
+                  for: 5m
+                  labels:
+                    severity: warning
+                    team: backend
+                  annotations:
+                    summary: "PostgreSQL has {{ $value }} active connections"
+                    description: "Close to max connections (100). Risk of connection exhaustion."
+
+                - alert: SLOErrorBudgetBurning
+                  expr: |
+                    (1 - (
+                      sum(rate(http_requests_total{code!~"5.."}[30m]))
+                      /
+                      sum(rate(http_requests_total[30m]))
+                    )) > 0.001
+                  for: 5m
+                  labels:
+                    severity: warning
+                    team: backend
+                  annotations:
+                    summary: "Burning error budget too fast"
+                    description: "At this rate, will exhaust 99.9% SLO budget. Current error rate: {{ $value | humanizePercentage }}"
+
+                - alert: TransactionSLOViolation
+                  expr: |
+                    (
+                      rate(payflow_transactions_total{status="COMPLETED"}[5m])
+                      /
+                      rate(payflow_transactions_total[5m])
+                    ) < 0.99
+                  for: 5m
+                  labels:
+                    severity: warning
+                    team: backend
+                  annotations:
+                    summary: "Transaction success rate {{ $value | humanizePercentage }} below 99% SLO"
+                    description: "Too many transaction failures. Investigate root cause."
+
+  # -- Alertmanager --
+  alertmanager:
+    enabled: true
+    config:
+      global:
+        resolve_timeout: 5m
+      route:
+        group_by: ['alertname', 'severity', 'team']
+        group_wait: 30s
+        group_interval: 5m
+        repeat_interval: 4h
+        receiver: 'slack-alerts'
+        routes:
+          - match:
+              severity: P0
+            receiver: 'pagerduty-critical'
+            group_wait: 0s
+            repeat_interval: 2m
+            continue: true
+          - match:
+              severity: critical
+            receiver: 'pagerduty-high'
+            group_wait: 10s
+            repeat_interval: 5m
+            continue: true
+          - match:
+              severity: warning
+            receiver: 'slack-alerts'
+            group_wait: 1m
+            repeat_interval: 1h
+      receivers:
+        - name: 'pagerduty-critical'
+          pagerduty_configs:
+            - service_key: 'REPLACE_WITH_PAGERDUTY_KEY'
+              description: '{{ .CommonAnnotations.summary }}'
+              severity: 'critical'
+          slack_configs:
+            - api_url: 'REPLACE_WITH_SLACK_WEBHOOK'
+              channel: '#incidents'
+              title: 'CRITICAL: {{ .CommonAnnotations.summary }}'
+              text: |
+                *Alert:* {{ .CommonAnnotations.summary }}
+                *Description:* {{ .CommonAnnotations.description }}
+              color: 'danger'
+              send_resolved: true
+        - name: 'pagerduty-high'
+          pagerduty_configs:
+            - service_key: 'REPLACE_WITH_PAGERDUTY_KEY'
+              description: '{{ .CommonAnnotations.summary }}'
+              severity: 'error'
+          slack_configs:
+            - api_url: 'REPLACE_WITH_SLACK_WEBHOOK'
+              channel: '#incidents'
+              title: '{{ .CommonAnnotations.summary }}'
+              text: '{{ .CommonAnnotations.description }}'
+              color: 'danger'
+              send_resolved: true
+        - name: 'slack-alerts'
+          slack_configs:
+            - api_url: 'REPLACE_WITH_SLACK_WEBHOOK'
+              channel: '#alerts'
+              title: '{{ .CommonAnnotations.summary }}'
+              text: |
+                {{ range .Alerts }}
+                *Alert:* {{ .Annotations.summary }}
+                *Severity:* {{ .Labels.severity }}
+                *Description:* {{ .Annotations.description }}
+                {{ end }}
+              color: '{{ if eq .Status "firing" }}warning{{ else }}good{{ end }}'
+              send_resolved: true
+      inhibit_rules:
+        - source_match:
+            severity: 'critical'
+            alertname: 'ServiceDown'
+          target_match:
+            severity: 'warning'
+          equal: ['job']
+        - source_match:
+            alertname: 'RabbitMQDown'
+          target_match:
+            alertname: 'TransactionFailureRateHigh'
+          equal: ['namespace']
+        - source_match:
+            alertname: 'CoreDNSDown'
+          target_match_re:
+            alertname: '.*CronJob.*'
+          equal: ['namespace']
+        - source_match:
+            alertname: 'CronJobSuspended'
+          target_match:
+            alertname: 'PendingTransactionsStuck'
+          equal: ['namespace']
+
+  # -- Node Exporter (built into kube-prometheus-stack) --
+  nodeExporter:
+    enabled: true
+
+  # -- Kube State Metrics (built into kube-prometheus-stack) --
+  kubeStateMetrics:
+    enabled: true
+
+# ============================================================
+# loki-stack overrides
+# ============================================================
+loki:
+  loki:
+    enabled: true
+    persistence:
+      enabled: true
+      size: 10Gi
+      storageClassName: gp2
+    config:
+      limits_config:
+        retention_period: 168h   # 7 days
+        ingestion_rate_mb: 16
+        ingestion_burst_size_mb: 32
+
+  promtail:
+    enabled: true
+    config:
+      clients:
+        - url: http://{{ .Release.Name }}-loki:3100/loki/api/v1/push
+      snippets:
+        pipelineStages:
+          - docker: {}
+          - match:
+              selector: '{namespace="payflow"}'
+              stages:
+                - json:
+                    expressions:
+                      level: level
+                      service: service
+                      traceId: traceId
+                - labels:
+                    level:
+                    service:
+                    traceId:

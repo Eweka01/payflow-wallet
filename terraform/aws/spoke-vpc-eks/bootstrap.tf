@@ -18,6 +18,7 @@ module "bootstrap_node" {
   alb_irsa_arn                 = aws_iam_role.alb_controller_irsa.arn
   external_secrets_irsa_arn    = aws_iam_role.external_secrets_irsa.arn
   cluster_autoscaler_irsa_arn  = aws_iam_role.cluster_autoscaler_irsa.arn
+  image_updater_irsa_arn       = aws_iam_role.image_updater_irsa.arn
   enable_external_dns          = var.enable_external_dns
   external_dns_irsa_arn        = var.enable_external_dns ? aws_iam_role.external_dns_irsa.arn : ""
   domain_name                  = var.domain_name

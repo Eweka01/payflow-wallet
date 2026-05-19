@@ -1,9 +1,0 @@
-# Apply after postgres-backup when on EKS: PVC needs default StorageClass (microk8s-hostpath doesn't exist)
-# kubectl apply -f k8s/backup/postgres-backup.yaml && kubectl apply -f k8s/overlays/eks/postgres-backup-patch.yaml
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: postgres-backup-pvc
-  namespace: payflow
-spec:
-  storageClassName: ""  # Use cluster default (gp3 on EKS)

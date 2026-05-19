@@ -11,9 +11,11 @@ spec:
   source:
     repoURL: https://github.com/Eweka01/payflow-wallet.git
     targetRevision: main
-    path: k8s/monitoring
-    directory:
-      exclude: alertmanager-external-secret.yaml   # no SM key yet; base config used
+    path: helm/monitoring
+    helm:
+      releaseName: payflow-monitoring
+      valueFiles:
+        - values.yaml
 
   destination:
     server: https://kubernetes.default.svc

@@ -49,14 +49,16 @@ resource "aws_iam_role_policy" "flow_logs" {
   })
 }
 
-# CloudWatch Log Group for VPC Flow Logs (name includes workspace to avoid conflicts)
+# CloudWatch Log Group for VPC Flow Logs
+# Uses var.environment (not terraform.workspace) — spinup.sh always uses the default
+# workspace, so terraform.workspace = "default" which would mismatch the import check.
 resource "aws_cloudwatch_log_group" "flow_logs" {
   # checkov:skip=CKV_AWS_158:KMS CMK for CW log groups adds cost; CloudWatch service-side encryption is sufficient for portfolio demo
-  name              = "/aws/vpc-flow-logs/${var.eks_cluster_name}-${terraform.workspace}"
+  name              = "/aws/vpc-flow-logs/${var.eks_cluster_name}-${var.environment}"
   retention_in_days  = 365  # 1 year minimum for fintech compliance
 
   tags = {
-    Name = "${var.eks_cluster_name}-${terraform.workspace}-flow-logs"
+    Name = "${var.eks_cluster_name}-${var.environment}-flow-logs"
   }
 }
 

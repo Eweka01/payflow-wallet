@@ -47,25 +47,96 @@ output "eks_node_role_arn" {
 output "ecr_repository_urls" {
   description = "ECR repository URLs for all services"
   value = {
-    api_gateway        = aws_ecr_repository.api_gateway.repository_url
-    auth_service       = aws_ecr_repository.auth_service.repository_url
-    wallet_service     = aws_ecr_repository.wallet_service.repository_url
-    transaction_service = aws_ecr_repository.transaction_service.repository_url
+    api_gateway          = aws_ecr_repository.api_gateway.repository_url
+    auth_service         = aws_ecr_repository.auth_service.repository_url
+    wallet_service       = aws_ecr_repository.wallet_service.repository_url
+    transaction_service  = aws_ecr_repository.transaction_service.repository_url
     notification_service = aws_ecr_repository.notification_service.repository_url
-    frontend           = aws_ecr_repository.frontend.repository_url
+    frontend             = aws_ecr_repository.frontend.repository_url
+    db_migrations        = aws_ecr_repository.db_migrations.repository_url
   }
 }
+
+# ============================================================
+# ArgoCD Webhook Outputs
+# ============================================================
+
+output "argocd_webhook_url" {
+  description = "Paste this URL into GitHub repo → Settings → Webhooks → Payload URL"
+  value       = "${aws_apigatewayv2_api.argocd_webhook.api_endpoint}/webhook"
+}
+
+output "argocd_webhook_post_deploy_steps" {
+  description = "Manual steps required after terraform apply to activate the webhook"
+  value       = <<-EOT
+
+    ── Step 1: Make ArgoCD internal-only ────────────────────────────────────────
+    Run from the bastion host (SSM session):
+
+      kubectl patch svc argocd-server -n argocd \
+        -p '{"metadata":{"annotations":{"service.beta.kubernetes.io/aws-load-balancer-internal":"true","service.beta.kubernetes.io/aws-load-balancer-scheme":"internal"}},"spec":{"type":"LoadBalancer"}}'
+
+      # Wait ~60s, then get the internal NLB DNS:
+      kubectl get svc argocd-server -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+
+    ── Step 2: Store ArgoCD internal URL in Secrets Manager ─────────────────────
+      ARGOCD_NLB=<paste NLB DNS from above>
+
+      aws secretsmanager put-secret-value \
+        --secret-id payflow/${local.env}/argocd-internal-url \
+        --secret-string "https://$ARGOCD_NLB" \
+        --region ${var.aws_region}
+
+    ── Step 3: Create ArgoCD service account + token ────────────────────────────
+    In the ArgoCD UI or via CLI on the bastion:
+
+      argocd account generate-token --account admin --grpc-web
+
+    Store the token:
+      aws secretsmanager put-secret-value \
+        --secret-id payflow/${local.env}/argocd-token \
+        --secret-string "<paste token>" \
+        --region ${var.aws_region}
+
+    ── Step 4: Generate and store the webhook secret ────────────────────────────
+      WEBHOOK_SECRET=$(openssl rand -hex 32)
+      echo "Your webhook secret: $WEBHOOK_SECRET"
+
+      aws secretsmanager put-secret-value \
+        --secret-id payflow/${local.env}/github-webhook-secret \
+        --secret-string "$WEBHOOK_SECRET" \
+        --region ${var.aws_region}
+
+    ── Step 5: Configure GitHub webhook ─────────────────────────────────────────
+    Go to: GitHub repo → Settings → Webhooks → Add webhook
+      Payload URL:  ${aws_apigatewayv2_api.argocd_webhook.api_endpoint}/webhook
+      Content type: application/json
+      Secret:       <the WEBHOOK_SECRET from step 4>
+      Events:       Just the push event
+      Active:       ✓
+
+    ── Done ─────────────────────────────────────────────────────────────────────
+    Next push to main will sync ArgoCD in seconds instead of up to 3 minutes.
+  EOT
+}
+
 
 output "ecr_repository_arns" {
   description = "ECR repository ARNs for all services"
   value = {
-    api_gateway        = aws_ecr_repository.api_gateway.arn
-    auth_service       = aws_ecr_repository.auth_service.arn
-    wallet_service     = aws_ecr_repository.wallet_service.arn
-    transaction_service = aws_ecr_repository.transaction_service.arn
+    api_gateway          = aws_ecr_repository.api_gateway.arn
+    auth_service         = aws_ecr_repository.auth_service.arn
+    wallet_service       = aws_ecr_repository.wallet_service.arn
+    transaction_service  = aws_ecr_repository.transaction_service.arn
     notification_service = aws_ecr_repository.notification_service.arn
-    frontend           = aws_ecr_repository.frontend.arn
+    frontend             = aws_ecr_repository.frontend.arn
+    db_migrations        = aws_ecr_repository.db_migrations.arn
   }
+}
+
+output "image_updater_irsa_arn" {
+  description = "IAM role ARN for ArgoCD Image Updater (annotate its ServiceAccount with this)"
+  value       = aws_iam_role.image_updater_irsa.arn
 }
 
 # Secrets Manager Outputs

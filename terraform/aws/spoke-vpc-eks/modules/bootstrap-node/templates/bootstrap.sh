@@ -11,6 +11,7 @@ ADMIN_USERS='${admin_users_json}'
 ALB_IRSA_ARN="${alb_irsa_arn}"
 EXTERNAL_SECRETS_IRSA_ARN="${external_secrets_irsa_arn}"
 CLUSTER_AUTOSCALER_IRSA_ARN="${cluster_autoscaler_irsa_arn}"
+IMAGE_UPDATER_IRSA_ARN="${image_updater_irsa_arn}"
 ENABLE_EXTERNAL_DNS="${enable_external_dns}"
 EXTERNAL_DNS_IRSA_ARN="${external_dns_irsa_arn}"
 DOMAIN_NAME="${domain_name}"
@@ -138,6 +139,22 @@ if [ "$ENABLE_EXTERNAL_DNS" = "true" ] && [ -n "$EXTERNAL_DNS_IRSA_ARN" ] && [ -
     --version 1.13.0 \
     --wait --timeout 5m
 fi
+
+# --- ArgoCD Image Updater ---
+# Watches ECR for new image tags. When a new tag appears, updates the ArgoCD
+# Application parameter directly (no git write-back commit needed).
+kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
+helm upgrade --install argocd-image-updater argocd-image-updater \
+  --repo https://argoproj.github.io/argo-helm \
+  --namespace argocd \
+  --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"="$IMAGE_UPDATER_IRSA_ARN" \
+  --set config.registries[0].name=ECR \
+  --set config.registries[0].api_url="https://$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com" \
+  --set config.registries[0].prefix="$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com" \
+  --set config.registries[0].credentials="ext:/usr/local/bin/argocd-image-updater-ecr-creds" \
+  --set config.registries[0].credsexpire=10h \
+  --version 0.9.6 \
+  --wait --timeout 5m
 
 echo "Bootstrap complete."
 

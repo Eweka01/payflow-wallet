@@ -5,6 +5,17 @@ metadata:
   namespace: argocd
   finalizers:
     - resources-finalizer.argocd.argoproj.io
+  annotations:
+    # Image Updater — watches api-gateway ECR repo as a proxy for all services.
+    # All services are built and pushed with the same tag (date-SHA format).
+    # When Image Updater sees a new tag it sets global.imageTag via Helm parameter
+    # override — no git write-back commit, no Stage 4 in CI.
+    argocd-image-updater.argoproj.io/image-list: >
+      payflow=470439679607.dkr.ecr.us-east-1.amazonaws.com/payflow-eks-cluster/api-gateway
+    argocd-image-updater.argoproj.io/payflow.update-strategy: name
+    argocd-image-updater.argoproj.io/payflow.allow-tags: "regexp:^[0-9]{14}-[0-9a-f]{7}$"
+    argocd-image-updater.argoproj.io/payflow.helm.image-tag: global.imageTag
+    argocd-image-updater.argoproj.io/write-back-method: argocd
 spec:
   project: default
 

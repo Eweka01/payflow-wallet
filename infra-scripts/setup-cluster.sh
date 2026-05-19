@@ -3,11 +3,16 @@
 # PayFlow Cluster Setup Script
 # =============================================================================
 # Runs AFTER spinup.sh has completed all Terraform infrastructure.
-# Installs ArgoCD, ESO, metrics-server, then applies the ArgoCD Application
-# manifests so the full payflow app and monitoring stack deploy automatically.
 #
-# Run from your LOCAL machine (not the bastion).
-# Requires: aws CLI configured, kubectl, helm
+# EKS API endpoint is PRIVATE (endpoint_public_access = false).
+# This script runs on your LOCAL machine. It:
+#   1. Collects values from AWS (account, bastion ID, IRSA ARNs)
+#   2. Reads the ArgoCD Application manifests from the local repo
+#   3. Generates a self-contained bastion-side script with all values embedded
+#   4. Uploads it to the Terraform state S3 bucket (presigned URL — no S3 IAM
+#      permissions needed on the bastion)
+#   5. Executes it on the bastion via SSM Run Command (kubectl/helm run there)
+#   6. Polls for completion and streams the output
 #
 # Usage:
 #   ./setup-cluster.sh
@@ -52,227 +57,382 @@ REGION="${AWS_REGION:-us-east-1}"
 CLUSTER_NAME="${EKS_CLUSTER_NAME:-payflow-eks-cluster}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# ── Pre-flight ────────────────────────────────────────────────────────────────
-banner "PRE-FLIGHT CHECKS"
+# Temp files — cleaned up on exit
+BASTION_SCRIPT=$(mktemp /tmp/bastion_setup_XXXXXX.sh)
+PARAMS_FILE=$(mktemp /tmp/ssm_params_XXXXXX.json)
+trap 'rm -f "$BASTION_SCRIPT" "$PARAMS_FILE"' EXIT
 
-command -v aws      > /dev/null 2>&1 || error "aws CLI not found. Install: brew install awscli"
-command -v kubectl  > /dev/null 2>&1 || error "kubectl not found. Install: brew install kubectl"
-command -v helm     > /dev/null 2>&1 || error "helm not found. Install: brew install helm"
+# =============================================================================
+# PART 1 — LOCAL PRE-FLIGHT
+# =============================================================================
+banner "PRE-FLIGHT CHECKS (local)"
+
+command -v aws > /dev/null 2>&1 || error "aws CLI not found. Install: brew install awscli"
+command -v jq  > /dev/null 2>&1 || error "jq not found. Install: brew install jq"
 
 ACCOUNT=$(aws sts get-caller-identity --query Account --output text --region "$REGION" 2>/dev/null) \
   || error "AWS CLI not configured. Run: aws configure"
 success "AWS account: $ACCOUNT  region: $REGION"
 
-# Check EKS cluster is ACTIVE
 CLUSTER_STATUS=$(aws eks describe-cluster --name "$CLUSTER_NAME" \
   --query 'cluster.status' --output text --region "$REGION" 2>/dev/null || echo "NOT_FOUND")
-[ "$CLUSTER_STATUS" = "ACTIVE" ] || error "EKS cluster '$CLUSTER_NAME' is not ACTIVE (status: $CLUSTER_STATUS). Run spinup.sh first."
-success "EKS cluster: $CLUSTER_NAME ($CLUSTER_STATUS)"
+[ "$CLUSTER_STATUS" = "ACTIVE" ] \
+  || error "EKS cluster '$CLUSTER_NAME' not ACTIVE (status: $CLUSTER_STATUS). Run spinup.sh first."
+success "EKS cluster $CLUSTER_NAME → $CLUSTER_STATUS"
 
-# ── Step 1 — Configure kubeconfig ────────────────────────────────────────────
-banner "STEP 1 — Configure kubeconfig"
+# =============================================================================
+# PART 2 — COLLECT VALUES
+# =============================================================================
+banner "COLLECTING VALUES"
 
-log "Updating kubeconfig for cluster $CLUSTER_NAME..."
-aws eks update-kubeconfig \
-  --name "$CLUSTER_NAME" \
-  --region "$REGION" \
-  --no-cli-pager
+TFSTATE_BUCKET="payflow-tfstate-${ACCOUNT}"
+aws s3api head-bucket --bucket "$TFSTATE_BUCKET" --region "$REGION" 2>/dev/null \
+  || error "Terraform state bucket '$TFSTATE_BUCKET' not found. Run spinup.sh first."
+success "Terraform state bucket: $TFSTATE_BUCKET"
 
-# Verify cluster connectivity
-log "Verifying kubectl connectivity..."
-NODE_COUNT=$(kubectl get nodes --no-headers 2>/dev/null | grep -c " Ready " || echo 0)
-if [ "$NODE_COUNT" -eq 0 ]; then
-  warn "No Ready nodes found yet. Waiting up to 3 minutes for nodes to join..."
-  for i in $(seq 1 18); do
-    sleep 10
-    NODE_COUNT=$(kubectl get nodes --no-headers 2>/dev/null | grep -c " Ready " || echo 0)
-    [ "$NODE_COUNT" -gt 0 ] && break
-    log "  Waiting... ($((i*10))s)"
-  done
-fi
-[ "$NODE_COUNT" -gt 0 ] || error "No Ready nodes after 3 minutes. Check EKS node group in AWS console."
-success "$NODE_COUNT node(s) Ready"
-kubectl get nodes
+log "Looking up bastion instance..."
+BASTION_ID=$(aws ec2 describe-instances \
+  --filters \
+    "Name=tag:Name,Values=payflow-bastion" \
+    "Name=instance-state-name,Values=running" \
+  --query "Reservations[0].Instances[0].InstanceId" \
+  --output text --region "$REGION" 2>/dev/null || echo "None")
+[ "$BASTION_ID" != "None" ] && [ -n "$BASTION_ID" ] \
+  || error "Bastion not running. Run spinup.sh first."
+success "Bastion: $BASTION_ID"
 
-# ── Step 2 — Install ArgoCD ───────────────────────────────────────────────────
-banner "STEP 2 — Install ArgoCD"
+log "Verifying SSM connectivity..."
+SSM_STATUS=$(aws ssm describe-instance-information \
+  --filters "Key=InstanceIds,Values=$BASTION_ID" \
+  --query "InstanceInformationList[0].PingStatus" \
+  --output text --region "$REGION" 2>/dev/null || echo "Unknown")
+[ "$SSM_STATUS" = "Online" ] \
+  || error "Bastion SSM status: $SSM_STATUS. Check instance profile and SSM agent."
+success "Bastion SSM: Online"
 
-if [ "$SKIP_ARGOCD" = true ]; then
-  warn "--skip-argocd set. Skipping ArgoCD install."
+ESO_ROLE_ARN="arn:aws:iam::${ACCOUNT}:role/payflow-eks-cluster-external-secrets-irsa"
+IMAGE_UPDATER_ROLE="arn:aws:iam::${ACCOUNT}:role/payflow-eks-cluster-image-updater-irsa"
+
+aws iam get-role --role-name payflow-eks-cluster-external-secrets-irsa \
+  --region "$REGION" > /dev/null 2>&1 \
+  || error "ESO IRSA role not found. Run spinup.sh first."
+success "ESO IRSA: $ESO_ROLE_ARN"
+
+# Read ArgoCD Application manifests from local repo
+APP_MANIFEST=$(cat "$REPO_ROOT/helm/argocd/application.yaml") \
+  || error "helm/argocd/application.yaml not found in $REPO_ROOT"
+MON_MANIFEST=$(cat "$REPO_ROOT/helm/argocd/monitoring-application.yaml") \
+  || error "helm/argocd/monitoring-application.yaml not found in $REPO_ROOT"
+success "ArgoCD manifests loaded"
+
+# =============================================================================
+# PART 3 — GENERATE BASTION SCRIPT
+# =============================================================================
+banner "GENERATING BASTION SCRIPT"
+
+# All values below are expanded NOW on the local machine and hard-coded into
+# the generated script. The bastion needs no Terraform state access.
+cat > "$BASTION_SCRIPT" << BASTION_EOF
+#!/usr/bin/env bash
+set -euo pipefail
+export PATH="/usr/local/bin:\$PATH"
+export HOME="/root"  # SSM Run Command sets HOME="" — set it so kubectl/helm find their config
+
+# Hard-coded values from local Terraform outputs — do not edit manually
+CLUSTER_NAME="${CLUSTER_NAME}"
+REGION="${REGION}"
+ACCOUNT="${ACCOUNT}"
+ESO_ROLE_ARN="${ESO_ROLE_ARN}"
+IMAGE_UPDATER_ROLE="${IMAGE_UPDATER_ROLE}"
+SKIP_ARGOCD="${SKIP_ARGOCD}"
+SKIP_ESO="${SKIP_ESO}"
+
+log()     { echo "[setup] \$1"; }
+success() { echo "[ok]    \$1"; }
+warn()    { echo "[warn]  \$1"; }
+err()     { echo "[error] \$1"; exit 1; }
+banner()  { echo ""; echo "=== \$1 ==="; echo ""; }
+
+# ── Step 1 — kubeconfig ──────────────────────────────────────────────────────
+banner "STEP 1 — kubeconfig + nodes"
+aws eks update-kubeconfig --name "\$CLUSTER_NAME" --region "\$REGION" --no-cli-pager
+
+log "Waiting for Ready nodes (up to 3 minutes)..."
+NODE_COUNT=0
+for i in \$(seq 1 18); do
+  NODE_COUNT=\$(kubectl get nodes --no-headers 2>/dev/null | grep -c " Ready " || true)
+  [ "\$NODE_COUNT" -gt 0 ] && break
+  printf "."; sleep 10
+done
+echo ""
+[ "\$NODE_COUNT" -gt 0 ] || err "No Ready nodes after 3 minutes. Check EKS node group."
+success "\$NODE_COUNT node(s) Ready"
+kubectl get nodes --no-headers
+
+# ── Step 2 — ArgoCD ──────────────────────────────────────────────────────────
+if [ "\$SKIP_ARGOCD" = "true" ]; then
+  warn "Skipping ArgoCD (--skip-argocd)"
 else
-  # Check if already installed
-  if kubectl get namespace argocd > /dev/null 2>&1 && \
-     kubectl get pods -n argocd -l app.kubernetes.io/name=argocd-server 2>/dev/null | grep -q "Running"; then
-    warn "ArgoCD already running. Skipping install. Use --skip-argocd to silence this."
+  banner "STEP 2 — ArgoCD"
+  ALREADY_RUNNING=\$(kubectl get pods -n argocd -l app.kubernetes.io/name=argocd-server \
+    --no-headers 2>/dev/null | grep -c Running || true)
+  if [ "\$ALREADY_RUNNING" -gt 0 ]; then
+    warn "ArgoCD already running — skipping install"
   else
-    log "Creating argocd namespace..."
     kubectl create namespace argocd 2>/dev/null || true
-
-    log "Installing ArgoCD (server-side apply — required for large CRDs)..."
-    # --server-side is required: ArgoCD CRDs exceed the 262KB annotation size limit
-    # that standard kubectl apply uses for last-applied-configuration.
-    kubectl apply --server-side -f \
-      https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml \
-      -n argocd
-
-    log "Waiting for ArgoCD server to be ready (up to 3 minutes)..."
+    log "Installing ArgoCD (server-side apply required for large CRDs)..."
+    kubectl apply --server-side \
+      -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml \
+      -n argocd 2>&1 | tail -3
+    log "Waiting for argocd-server (up to 3 minutes)..."
     kubectl wait --for=condition=available deployment/argocd-server \
       -n argocd --timeout=180s
     success "ArgoCD deployed"
   fi
 
-  # Expose ArgoCD via LoadBalancer if not already
-  ARGOCD_TYPE=$(kubectl get svc argocd-server -n argocd -o jsonpath='{.spec.type}' 2>/dev/null || echo "")
-  if [ "$ARGOCD_TYPE" != "LoadBalancer" ]; then
-    log "Exposing ArgoCD server via LoadBalancer..."
-    kubectl patch svc argocd-server -n argocd -p '{"spec":{"type":"LoadBalancer"}}'
+  # Patch to internal NLB if not already done
+  ARGOCD_TYPE=\$(kubectl get svc argocd-server -n argocd \
+    -o jsonpath='{.spec.type}' 2>/dev/null || echo "")
+  ARGOCD_INTERNAL=\$(kubectl get svc argocd-server -n argocd \
+    -o jsonpath='{.metadata.annotations.service\.beta\.kubernetes\.io/aws-load-balancer-internal}' \
+    2>/dev/null || echo "")
+  if [ "\$ARGOCD_TYPE" != "LoadBalancer" ] || [ "\$ARGOCD_INTERNAL" != "true" ]; then
+    log "Patching ArgoCD service to internal NLB..."
+    kubectl patch svc argocd-server -n argocd -p \
+      '{"metadata":{"annotations":{"service.beta.kubernetes.io/aws-load-balancer-internal":"true","service.beta.kubernetes.io/aws-load-balancer-scheme":"internal"}},"spec":{"type":"LoadBalancer"}}'
   fi
 
-  log "Waiting for ArgoCD LoadBalancer external IP (up to 2 minutes)..."
-  for i in $(seq 1 24); do
-    ARGOCD_URL=$(kubectl get svc argocd-server -n argocd \
+  log "Waiting for internal NLB hostname (up to 2 minutes)..."
+  ARGOCD_URL=""
+  for i in \$(seq 1 24); do
+    ARGOCD_URL=\$(kubectl get svc argocd-server -n argocd \
       -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
-    [ -n "$ARGOCD_URL" ] && break
-    sleep 5
-    log "  Waiting for NLB... ($((i*5))s)"
+    [ -n "\$ARGOCD_URL" ] && break
+    printf "."; sleep 5
   done
-
-  if [ -n "$ARGOCD_URL" ]; then
-    success "ArgoCD UI: http://$ARGOCD_URL"
-    ARGOCD_PASSWORD=$(kubectl -n argocd get secret argocd-initial-admin-secret \
+  echo ""
+  if [ -n "\$ARGOCD_URL" ]; then
+    ARGOCD_PASSWORD=\$(kubectl -n argocd get secret argocd-initial-admin-secret \
       -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null || echo "<check manually>")
-    success "ArgoCD admin password: $ARGOCD_PASSWORD"
-    echo ""
-    echo -e "  ${YELLOW}Save these credentials — you'll need them to log into the ArgoCD UI:${NC}"
-    echo -e "  URL:      http://$ARGOCD_URL"
-    echo -e "  User:     admin"
-    echo -e "  Password: $ARGOCD_PASSWORD"
-    echo ""
+    success "ArgoCD internal NLB: https://\$ARGOCD_URL"
+    echo "  ArgoCD user:     admin"
+    echo "  ArgoCD password: \$ARGOCD_PASSWORD"
+    echo "  NOTE: NLB is VPC-only. Access via bastion SSM session."
   else
-    warn "ArgoCD NLB URL not yet assigned. Check: kubectl get svc argocd-server -n argocd"
+    warn "ArgoCD NLB hostname not yet assigned."
+    warn "Check later: kubectl get svc argocd-server -n argocd"
   fi
 fi
 
-# ── Step 3 — Install External Secrets Operator (ESO) ─────────────────────────
-banner "STEP 3 — Install External Secrets Operator"
-
-if [ "$SKIP_ESO" = true ]; then
-  warn "--skip-eso set. Skipping ESO install."
+# ── Step 3 — External Secrets Operator ──────────────────────────────────────
+if [ "\$SKIP_ESO" = "true" ]; then
+  warn "Skipping ESO (--skip-eso)"
 else
-  if kubectl get namespace external-secrets > /dev/null 2>&1 && \
-     kubectl get pods -n external-secrets 2>/dev/null | grep -q "Running"; then
-    warn "ESO already running. Skipping install."
+  banner "STEP 3 — External Secrets Operator"
+  ESO_RUNNING=\$(kubectl get pods -n external-secrets --no-headers 2>/dev/null \
+    | grep -c Running || true)
+  if [ "\$ESO_RUNNING" -gt 0 ]; then
+    warn "ESO already running — skipping"
   else
-    # Derive the IRSA role ARN from account ID (matches Terraform module output)
-    ESO_ROLE_ARN="arn:aws:iam::${ACCOUNT}:role/payflow-eks-cluster-external-secrets-irsa"
-
-    # Verify the role exists before installing
-    aws iam get-role --role-name payflow-eks-cluster-external-secrets-irsa \
-      --region "$REGION" > /dev/null 2>&1 \
-      || error "IRSA role not found: payflow-eks-cluster-external-secrets-irsa. Run spinup.sh first."
-
-    log "Adding external-secrets Helm repo..."
     helm repo add external-secrets https://charts.external-secrets.io 2>/dev/null || true
-    helm repo update
-
+    helm repo update 2>&1 | grep -E 'Update|Successfully|error' || true
     log "Installing External Secrets Operator..."
     helm install external-secrets external-secrets/external-secrets \
       --namespace external-secrets \
       --create-namespace \
-      --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"="$ESO_ROLE_ARN" \
-      --wait \
-      --timeout 3m
-
-    success "ESO installed with IRSA role: $ESO_ROLE_ARN"
+      --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"="\$ESO_ROLE_ARN" \
+      --wait --timeout 3m 2>&1 | tail -5
+    success "ESO installed with IRSA: \$ESO_ROLE_ARN"
   fi
 fi
 
-# ── Step 4 — Install metrics-server ──────────────────────────────────────────
-banner "STEP 4 — Install metrics-server"
-
-if kubectl get deployment metrics-server -n kube-system > /dev/null 2>&1; then
-  warn "metrics-server already installed. Skipping."
+# ── Step 4 — metrics-server ──────────────────────────────────────────────────
+banner "STEP 4 — metrics-server"
+if kubectl get deployment metrics-server -n kube-system &>/dev/null; then
+  warn "metrics-server already installed"
 else
-  log "Installing metrics-server (required for HPA)..."
   kubectl apply -f \
-    https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
-
-  log "Waiting for metrics-server to be ready (up to 90 seconds)..."
+    https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml \
+    2>&1 | tail -3
   kubectl wait --for=condition=available deployment/metrics-server \
-    -n kube-system --timeout=90s || warn "metrics-server not ready yet — HPAs may not work immediately"
+    -n kube-system --timeout=90s \
+    || warn "metrics-server not ready yet — HPAs may lag on first deploy"
   success "metrics-server installed"
 fi
 
-# ── Step 5 — Apply ArgoCD Application manifests ───────────────────────────────
-banner "STEP 5 — Apply ArgoCD Application manifests"
+# ── Step 5 — ArgoCD Image Updater ────────────────────────────────────────────
+banner "STEP 5 — ArgoCD Image Updater"
+IU_COUNT=\$(kubectl get pods -n argocd \
+  -l app.kubernetes.io/name=argocd-image-updater \
+  --no-headers 2>/dev/null | grep -c Running || true)
+if [ "\$IU_COUNT" -gt 0 ]; then
+  success "Image Updater already running"
+else
+  warn "Image Updater not found — installing (bootstrap node may not have completed)..."
+  helm upgrade --install argocd-image-updater argocd-image-updater \
+    --repo https://argoproj.github.io/argo-helm \
+    --namespace argocd \
+    --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"="\$IMAGE_UPDATER_ROLE" \
+    --set "config.registries[0].name=ECR" \
+    --set "config.registries[0].api_url=https://\${ACCOUNT}.dkr.ecr.\${REGION}.amazonaws.com" \
+    --set "config.registries[0].prefix=\${ACCOUNT}.dkr.ecr.\${REGION}.amazonaws.com" \
+    --set "config.registries[0].credentials=ext:/usr/local/bin/argocd-image-updater-ecr-creds" \
+    --set "config.registries[0].credsexpire=10h" \
+    --version 0.9.6 \
+    --wait --timeout 5m 2>&1 | tail -5
+  success "Image Updater installed"
+fi
 
-# Verify ArgoCD is running before applying Applications
-kubectl get namespace argocd > /dev/null 2>&1 \
-  || error "ArgoCD namespace not found. ArgoCD must be installed before applying Applications."
+# ── Step 6 — Apply ArgoCD Application manifests ──────────────────────────────
+banner "STEP 6 — ArgoCD Application manifests"
+kubectl get ns argocd &>/dev/null \
+  || err "argocd namespace missing — ArgoCD must be installed first"
 
-log "Applying payflow Application (Helm chart → payflow namespace)..."
-kubectl apply -f "$REPO_ROOT/helm/argocd/application.yaml" -n argocd
-success "payflow Application created"
+cat <<'APPEOF' | kubectl apply -f -
+${APP_MANIFEST}
+APPEOF
+success "payflow Application applied"
 
-log "Applying payflow-monitoring Application (raw YAML → monitoring namespace)..."
-kubectl apply -f "$REPO_ROOT/helm/argocd/monitoring-application.yaml" -n argocd
-success "payflow-monitoring Application created"
+cat <<'MONEOF' | kubectl apply -f -
+${MON_MANIFEST}
+MONEOF
+success "payflow-monitoring Application applied"
 
-# ── Step 6 — Wait for sync and report ────────────────────────────────────────
-banner "STEP 6 — Waiting for ArgoCD to sync"
-
-log "ArgoCD will now pull from GitHub and deploy everything."
-log "This typically takes 3-5 minutes for initial sync."
-log "Waiting up to 10 minutes for payflow app to become Healthy..."
-echo ""
-
-for i in $(seq 1 40); do
-  HEALTH=$(kubectl get application payflow -n argocd \
+# ── Step 7 — Wait for ArgoCD sync ────────────────────────────────────────────
+banner "STEP 7 — Waiting for ArgoCD sync (up to 10 min)"
+for i in \$(seq 1 40); do
+  HEALTH=\$(kubectl get application payflow -n argocd \
     -o jsonpath='{.status.health.status}' 2>/dev/null || echo "Unknown")
-  SYNC=$(kubectl get application payflow -n argocd \
+  SYNC=\$(kubectl get application payflow -n argocd \
     -o jsonpath='{.status.sync.status}' 2>/dev/null || echo "Unknown")
-  echo -e "  [${i}/40] payflow → health: ${HEALTH}  sync: ${SYNC}"
-  [ "$HEALTH" = "Healthy" ] && break
+  printf "  [%02d/40] health: %-10s  sync: %s\n" "\$i" "\$HEALTH" "\$SYNC"
+  [ "\$HEALTH" = "Healthy" ] && break
   sleep 15
 done
 
-echo ""
-PAYFLOW_HEALTH=$(kubectl get application payflow -n argocd \
+# ── Summary ──────────────────────────────────────────────────────────────────
+banner "SETUP COMPLETE"
+PF_HEALTH=\$(kubectl get application payflow -n argocd \
   -o jsonpath='{.status.health.status}' 2>/dev/null || echo "Unknown")
-MONITORING_HEALTH=$(kubectl get application payflow-monitoring -n argocd \
+MON_HEALTH=\$(kubectl get application payflow-monitoring -n argocd \
   -o jsonpath='{.status.health.status}' 2>/dev/null || echo "Unknown")
+ARGOCD_NLB=\$(kubectl get svc argocd-server -n argocd \
+  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "<pending>")
+ARGOCD_PASS=\$(kubectl -n argocd get secret argocd-initial-admin-secret \
+  -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null || echo "<check manually>")
 
-if [ "$PAYFLOW_HEALTH" = "Healthy" ]; then
-  success "payflow app: Healthy"
-else
-  warn "payflow app: $PAYFLOW_HEALTH (may still be syncing — check ArgoCD UI)"
+echo ""
+echo "  payflow app health:        \$PF_HEALTH"
+echo "  payflow-monitoring health: \$MON_HEALTH"
+echo ""
+echo "  ArgoCD NLB (VPC-only):     https://\$ARGOCD_NLB"
+echo "  ArgoCD admin password:     \$ARGOCD_PASS"
+echo ""
+echo "  NEXT STEPS:"
+echo "  1. Run Step 17 (webhook setup) from the deployment guide"
+echo "     — must run from bastion SSM session to reach ArgoCD NLB"
+echo "  2. Fill values-dev.yaml with WAF ARN + certificate ARN from spinup.sh output"
+echo "  3. git commit + push values-dev.yaml to trigger first ArgoCD sync"
+BASTION_EOF
+
+success "Bastion script generated ($(wc -l < "$BASTION_SCRIPT") lines)"
+
+# =============================================================================
+# PART 4 — UPLOAD TO S3 + PRESIGNED URL
+# =============================================================================
+banner "UPLOADING SCRIPT TO S3"
+
+S3_KEY="setup-scripts/bastion_setup_$(date +%Y%m%d_%H%M%S).sh"
+log "Uploading to s3://$TFSTATE_BUCKET/$S3_KEY..."
+aws s3 cp "$BASTION_SCRIPT" "s3://${TFSTATE_BUCKET}/${S3_KEY}" --region "$REGION"
+
+log "Generating presigned URL (valid 30 minutes)..."
+PRESIGNED_URL=$(aws s3 presign "s3://${TFSTATE_BUCKET}/${S3_KEY}" \
+  --expires-in 1800 --region "$REGION")
+success "Script available via presigned URL"
+
+# =============================================================================
+# PART 5 — SSM RUN COMMAND
+# =============================================================================
+banner "RUNNING SETUP ON BASTION VIA SSM"
+
+cat > "$PARAMS_FILE" << PARAMS_EOF
+{
+  "commands": [
+    "curl -fsSL '${PRESIGNED_URL}' -o /tmp/bastion_cluster_setup.sh && chmod +x /tmp/bastion_cluster_setup.sh && /tmp/bastion_cluster_setup.sh 2>&1"
+  ]
+}
+PARAMS_EOF
+
+log "Sending SSM Run Command to $BASTION_ID..."
+CMD_ID=$(aws ssm send-command \
+  --instance-ids "$BASTION_ID" \
+  --document-name "AWS-RunShellScript" \
+  --parameters "file://${PARAMS_FILE}" \
+  --timeout-seconds 1200 \
+  --region "$REGION" \
+  --query "Command.CommandId" \
+  --output text)
+success "Command ID: $CMD_ID"
+
+log "Polling for completion (up to 20 minutes)..."
+echo ""
+ELAPSED=0
+STATUS="InProgress"
+while [ "$ELAPSED" -lt 1200 ]; do
+  STATUS=$(aws ssm get-command-invocation \
+    --command-id "$CMD_ID" \
+    --instance-id "$BASTION_ID" \
+    --query "Status" \
+    --output text --region "$REGION" 2>/dev/null || echo "Pending")
+  printf "\r  Status: %-20s (%ds elapsed)" "$STATUS" "$ELAPSED"
+  case "$STATUS" in
+    Success|Failed|TimedOut|Cancelled|Undeliverable) break ;;
+  esac
+  sleep 10
+  ELAPSED=$((ELAPSED + 10))
+done
+echo ""
+
+# =============================================================================
+# PART 6 — PRINT BASTION OUTPUT
+# =============================================================================
+banner "BASTION OUTPUT"
+
+STDOUT=$(aws ssm get-command-invocation \
+  --command-id "$CMD_ID" \
+  --instance-id "$BASTION_ID" \
+  --query "StandardOutputContent" \
+  --output text --region "$REGION" 2>/dev/null || echo "<unable to retrieve output>")
+STDERR=$(aws ssm get-command-invocation \
+  --command-id "$CMD_ID" \
+  --instance-id "$BASTION_ID" \
+  --query "StandardErrorContent" \
+  --output text --region "$REGION" 2>/dev/null || echo "")
+EXIT_CODE=$(aws ssm get-command-invocation \
+  --command-id "$CMD_ID" \
+  --instance-id "$BASTION_ID" \
+  --query "ResponseCode" \
+  --output text --region "$REGION" 2>/dev/null || echo "-1")
+
+echo "$STDOUT"
+
+if [ -n "$STDERR" ] && [ "$STDERR" != "None" ]; then
+  echo ""
+  echo -e "${YELLOW}--- stderr ---${NC}"
+  echo "$STDERR"
 fi
-echo -e "  payflow-monitoring: $MONITORING_HEALTH"
 
-# ── Summary ───────────────────────────────────────────────────────────────────
-banner "SETUP COMPLETE — SUMMARY"
-
-FRONTEND_URL=$(kubectl get svc frontend -n payflow \
-  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "<pending>")
-ARGOCD_URL_FINAL=$(kubectl get svc argocd-server -n argocd \
-  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "<pending>")
-ARGOCD_PASS=$(kubectl -n argocd get secret argocd-initial-admin-secret \
-  -o jsonpath="{.data.password}" 2>/dev/null | base64 -d 2>/dev/null || echo "<unavailable>")
+# Clean up the S3 script object
+aws s3 rm "s3://${TFSTATE_BUCKET}/${S3_KEY}" --region "$REGION" 2>/dev/null || true
 
 echo ""
-echo -e "  ${GREEN}${BOLD}PayFlow Application:${NC}"
-echo -e "    URL: http://$FRONTEND_URL"
-echo ""
-echo -e "  ${GREEN}${BOLD}ArgoCD UI:${NC}"
-echo -e "    URL:      http://$ARGOCD_URL_FINAL"
-echo -e "    User:     admin"
-echo -e "    Password: $ARGOCD_PASS"
-echo ""
-echo -e "  ${GREEN}${BOLD}Useful commands:${NC}"
-echo -e "    kubectl get pods -n payflow"
-echo -e "    kubectl get application -n argocd"
-echo -e "    kubectl get pods -n monitoring"
-echo ""
-echo -e "  ${YELLOW}Note:${NC} If frontend URL shows <pending>, wait 1-2 minutes for the NLB"
-echo -e "  to be assigned, then run: kubectl get svc frontend -n payflow"
-echo ""
+if [ "$STATUS" = "Success" ] && [ "$EXIT_CODE" = "0" ]; then
+  success "Cluster setup complete (exit 0)"
+  echo ""
+  echo -e "  ${YELLOW}NOTE: ArgoCD output above is limited to 24KB. If output was truncated:${NC}"
+  echo -e "  ${YELLOW}  SSM into bastion and run: kubectl get pods -n payflow${NC}"
+  echo -e "  ${YELLOW}  aws ssm start-session --target $BASTION_ID --region $REGION${NC}"
+else
+  error "Setup finished with status=$STATUS exit_code=$EXIT_CODE. Review output above."
+fi

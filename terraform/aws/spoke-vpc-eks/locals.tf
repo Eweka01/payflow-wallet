@@ -1,9 +1,11 @@
-# Local values for workspace-based configuration
-# Use terraform workspaces to manage dev/staging/prod environments
+# Local values for environment-based configuration
+# env is driven by var.environment (set in terraform.tfvars) NOT by terraform workspace.
+# spinup.sh always uses the default workspace; using terraform.workspace here would set
+# local.env = "default", causing Secrets Manager paths like payflow/default/rds that
+# ESO (configured for payflow/dev/...) cannot find. var.environment fixes this.
 
 locals {
-  # Current workspace (dev, staging, prod)
-  env = terraform.workspace
+  env = var.environment
 
   # Node configuration per environment
   node_config = {

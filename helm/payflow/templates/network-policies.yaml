@@ -1,0 +1,447 @@
+---
+# Default deny all — every other policy below opens only what's needed
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: payflow
+  labels:
+    {{- include "payflow.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+---
+# ALB and ingress controller (kube-system) -> frontend
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: frontend-allow-ingress
+  namespace: payflow
+  labels:
+    {{- include "payflow.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: frontend
+  policyTypes:
+  - Ingress
+  ingress:
+  - from: []  # internet-facing ALB and kube-system ingress controller
+    ports:
+    - protocol: TCP
+      port: 80
+---
+# ALB and ingress controller (kube-system) -> api-gateway
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-gateway-allow-ingress
+  namespace: payflow
+  labels:
+    {{- include "payflow.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: api-gateway
+  policyTypes:
+  - Ingress
+  ingress:
+  - from: []  # internet-facing ALB and kube-system ingress controller
+    ports:
+    - protocol: TCP
+      port: 3000
+---
+# api-gateway -> backend services + DNS + external HTTPS
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-gateway-allow-egress
+  namespace: payflow
+  labels:
+    {{- include "payflow.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: api-gateway
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          app: auth-service
+    ports:
+    - protocol: TCP
+      port: 3004
+  - to:
+    - podSelector:
+        matchLabels:
+          app: wallet-service
+    ports:
+    - protocol: TCP
+      port: 3001
+  - to:
+    - podSelector:
+        matchLabels:
+          app: transaction-service
+    ports:
+    - protocol: TCP
+      port: 3002
+  - to:
+    - podSelector:
+        matchLabels:
+          app: notification-service
+    ports:
+    - protocol: TCP
+      port: 3003
+  - to: []
+    ports:
+    - protocol: UDP
+      port: 53
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 443
+---
+# backend services -> postgres (RDS), redis (ElastiCache), rabbitmq (Amazon MQ)
+# ipBlock 10.0.0.0/8 covers all private RFC1918 — works for both local pods and AWS managed services
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: services-allow-db-egress
+  namespace: payflow
+  labels:
+    {{- include "payflow.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+    - key: app
+      operator: In
+      values:
+      - auth-service
+      - wallet-service
+      - transaction-service
+      - notification-service
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          app: postgres
+    - ipBlock:
+        cidr: 10.0.0.0/8
+    ports:
+    - protocol: TCP
+      port: 5432
+  - to:
+    - podSelector:
+        matchLabels:
+          app: redis
+    - ipBlock:
+        cidr: 10.0.0.0/8
+    ports:
+    - protocol: TCP
+      port: 6379
+    - protocol: TCP
+      port: 6380  # ElastiCache TLS
+  - to:
+    - podSelector:
+        matchLabels:
+          app: rabbitmq
+    - ipBlock:
+        cidr: 10.0.0.0/8
+    ports:
+    - protocol: TCP
+      port: 5672   # AMQP plain (local)
+    - protocol: TCP
+      port: 5671   # AMQP TLS (Amazon MQ)
+  - to: []
+    ports:
+    - protocol: UDP
+      port: 53
+---
+# backend services ingress from api-gateway
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: backend-services-allow-ingress
+  namespace: payflow
+  labels:
+    {{- include "payflow.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+    - key: app
+      operator: In
+      values:
+      - auth-service
+      - wallet-service
+      - transaction-service
+      - notification-service
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: api-gateway
+    ports:
+    - protocol: TCP
+      port: 3004
+    - protocol: TCP
+      port: 3001
+    - protocol: TCP
+      port: 3002
+    - protocol: TCP
+      port: 3003
+---
+# transaction-service -> wallet-service (balance updates during transfers)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: transaction-service-allow-wallet-egress
+  namespace: payflow
+  labels:
+    {{- include "payflow.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: transaction-service
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          app: wallet-service
+    ports:
+    - protocol: TCP
+      port: 3001
+  - to:
+    - podSelector:
+        matchLabels:
+          app: rabbitmq
+    - ipBlock:
+        cidr: 10.0.0.0/8
+    ports:
+    - protocol: TCP
+      port: 5672
+    - protocol: TCP
+      port: 5671
+  - to: []
+    ports:
+    - protocol: UDP
+      port: 53
+---
+# wallet-service ingress from transaction-service
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: wallet-service-allow-transaction-ingress
+  namespace: payflow
+  labels:
+    {{- include "payflow.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: wallet-service
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: transaction-service
+    ports:
+    - protocol: TCP
+      port: 3001
+---
+# Prometheus (monitoring namespace) -> all payflow services for /metrics scraping
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-prometheus-scraping
+  namespace: payflow
+  labels:
+    {{- include "payflow.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+    - key: app
+      operator: In
+      values:
+      - api-gateway
+      - auth-service
+      - wallet-service
+      - transaction-service
+      - notification-service
+      - postgres-exporter
+      - redis-exporter
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: monitoring
+      podSelector:
+        matchLabels:
+          app: prometheus
+    ports:
+    - protocol: TCP
+      port: 3000
+    - protocol: TCP
+      port: 3001
+    - protocol: TCP
+      port: 3002
+    - protocol: TCP
+      port: 3003
+    - protocol: TCP
+      port: 3004
+    - protocol: TCP
+      port: 9187  # postgres-exporter
+    - protocol: TCP
+      port: 9121  # redis-exporter
+---
+# postgres-exporter egress -> RDS + DNS
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-exporter-allow-egress
+  namespace: payflow
+  labels:
+    {{- include "payflow.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: postgres-exporter
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  - to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  - to:
+    - podSelector:
+        matchLabels:
+          app: postgres
+    - ipBlock:
+        cidr: 10.0.0.0/8
+    ports:
+    - protocol: TCP
+      port: 5432
+---
+# redis-exporter egress -> ElastiCache + DNS
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis-exporter-allow-egress
+  namespace: payflow
+  labels:
+    {{- include "payflow.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: redis-exporter
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  - to:
+    - podSelector:
+        matchLabels:
+          app: redis
+    - ipBlock:
+        cidr: 10.0.0.0/8
+    ports:
+    - protocol: TCP
+      port: 6379
+    - protocol: TCP
+      port: 6380
+---
+# CronJob pods (transaction-timeout-handler) egress -> RDS + DNS
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: cronjob-allow-egress
+  namespace: payflow
+  labels:
+    {{- include "payflow.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      cronjob: transaction-timeout-handler
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  - to:
+    - podSelector:
+        matchLabels:
+          app: postgres
+    - ipBlock:
+        cidr: 10.0.0.0/8
+    ports:
+    - protocol: TCP
+      port: 5432
+---
+# DB migration job egress -> RDS + DNS
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: db-migration-allow-egress
+  namespace: payflow
+  labels:
+    {{- include "payflow.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      job-name: db-migration-job
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - ipBlock:
+        cidr: 10.0.0.0/8
+    ports:
+    - protocol: TCP
+      port: 5432
+  - to: []
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53

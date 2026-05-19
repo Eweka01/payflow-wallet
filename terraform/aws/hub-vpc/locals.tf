@@ -1,5 +1,8 @@
 locals {
-  env = terraform.workspace
+  # env must come from var.environment, not terraform.workspace.
+  # spinup.sh uses the default workspace, so terraform.workspace = "default"
+  # which would tag all hub resources with environment = "default".
+  env = var.environment
 
   common_tags = {
     project       = "payflow"

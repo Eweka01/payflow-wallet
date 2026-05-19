@@ -122,6 +122,9 @@ build/
 coverage/
 .nyc_output/
 
+# Helm chart dependencies (fetched by `helm dependency update`; only Chart.lock is committed)
+helm/*/charts/*.tgz
+
 # ═══════════════════════════════════════════════════════════════
 # Logs & OS
 # ═══════════════════════════════════════════════════════════════
@@ -182,3 +185,10 @@ payflow-*.tar
 
 #Ignore cursor AI rules
 .cursor/rules/codacy.mdc
+
+# Claude Code memory
+.claude/
+
+# Architecture diagrams (generated)
+architecture-diagram.py
+payflow-architecture*.png

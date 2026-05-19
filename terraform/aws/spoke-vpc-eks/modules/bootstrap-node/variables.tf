@@ -84,6 +84,11 @@ variable "tags" {
   description = "Tags (must include Environment, Name)"
 }
 
+variable "image_updater_irsa_arn" {
+  type        = string
+  description = "ArgoCD Image Updater IRSA role ARN"
+}
+
 variable "self_terminate" {
   type        = bool
   default     = true

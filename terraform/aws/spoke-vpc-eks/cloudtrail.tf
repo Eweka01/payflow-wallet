@@ -119,6 +119,31 @@ resource "aws_sns_topic" "cloudtrail" {
   }
 }
 
+# SNS Topic Policy — CloudTrail must be explicitly allowed to publish
+resource "aws_sns_topic_policy" "cloudtrail" {
+  arn = aws_sns_topic.cloudtrail.arn
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "AllowCloudTrailPublish"
+        Effect = "Allow"
+        Principal = {
+          Service = "cloudtrail.amazonaws.com"
+        }
+        Action   = "SNS:Publish"
+        Resource = aws_sns_topic.cloudtrail.arn
+        Condition = {
+          StringEquals = {
+            "AWS:SourceArn" = "arn:aws:cloudtrail:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:trail/${var.eks_cluster_name}-cloudtrail"
+          }
+        }
+      }
+    ]
+  })
+}
+
 # CloudTrail
 resource "aws_cloudtrail" "eks" {
   # checkov:skip=CKV_AWS_35:S3 bucket uses KMS encryption (config_cloudtrail key); additional CloudTrail KMS key adds cost and management overhead
@@ -131,8 +156,8 @@ resource "aws_cloudtrail" "eks" {
   enable_log_file_validation    = true
 
   depends_on = [
-    aws_s3_bucket_policy.cloudtrail,  # Bucket policy must exist first
-    aws_sns_topic.cloudtrail,
+    aws_s3_bucket_policy.cloudtrail,
+    aws_sns_topic_policy.cloudtrail,  # Topic policy must exist before CloudTrail can publish
   ]
 
   tags = {
