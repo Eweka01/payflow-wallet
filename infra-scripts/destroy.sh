@@ -375,10 +375,19 @@ cleanup_k8s_elbs() {
     aws elbv2 delete-load-balancer --load-balancer-arn "$arn" --region "$REGION" 2>/dev/null || true
   done
 
+  # ELB deletion is async — ENIs are released in the background after the API call
+  # returns. Sleep BEFORE trying to delete SGs, otherwise the SG delete fails
+  # silently (|| true) because ENIs still hold the SG, and the VPC hangs later.
+  if [ -n "$classic_elbs$v2_arns" ]; then
+    log "Waiting 60s for ELB ENIs to release before deleting security groups..."
+    sleep 60
+  fi
+
   # Delete all K8s-managed security groups in the spoke VPC:
   #   k8s-elb-*            — classic in-tree controller
   #   k8s-traffic-*        — AWS Load Balancer Controller (shared backend SG)
   #   tagged elbv2.k8s.aws/cluster — AWS Load Balancer Controller (frontend SG)
+  #   k8s-*                — catch-all for any other ALB controller SGs
   local k8s_sgs
   k8s_sgs=$(
     {
@@ -391,35 +400,42 @@ cleanup_k8s_elbs() {
       aws ec2 describe-security-groups \
         --filters "Name=vpc-id,Values=$spoke_vpc" "Name=tag-key,Values=elbv2.k8s.aws/cluster" \
         --query 'SecurityGroups[].GroupId' --output text --region "$REGION" 2>/dev/null || true
-    } | tr '\t' '\n' | sort -u | xargs
+      aws ec2 describe-security-groups \
+        --filters "Name=vpc-id,Values=$spoke_vpc" "Name=group-name,Values=k8s-*" \
+        --query 'SecurityGroups[?GroupName!=`default`].GroupId' --output text --region "$REGION" 2>/dev/null || true
+    } | tr '\t' '\n' | grep -v '^$' | sort -u | xargs
   )
 
   delete_sg() {
     local sg="$1"
     [ -z "$sg" ] && return 0
-    local ingress egress
-    ingress=$(aws ec2 describe-security-groups --group-ids "$sg" \
-      --query 'SecurityGroups[0].IpPermissions' --output json --region "$REGION" 2>/dev/null || echo "[]")
-    egress=$(aws ec2 describe-security-groups --group-ids "$sg" \
-      --query 'SecurityGroups[0].IpPermissionsEgress' --output json --region "$REGION" 2>/dev/null || echo "[]")
-    [ "$ingress" != "[]" ] && [ "$ingress" != "null" ] && \
+    # Use security-group-rule IDs (not ip-permissions JSON) — avoids format issues
+    local ingress_rules egress_rules
+    ingress_rules=$(aws ec2 describe-security-group-rules --region "$REGION" \
+      --filters "Name=group-id,Values=$sg" \
+      --query 'SecurityGroupRules[?!IsEgress].SecurityGroupRuleId' \
+      --output text 2>/dev/null || true)
+    egress_rules=$(aws ec2 describe-security-group-rules --region "$REGION" \
+      --filters "Name=group-id,Values=$sg" \
+      --query 'SecurityGroupRules[?IsEgress].SecurityGroupRuleId' \
+      --output text 2>/dev/null || true)
+    [ -n "$ingress_rules" ] && \
       aws ec2 revoke-security-group-ingress --group-id "$sg" \
-        --ip-permissions "$ingress" --region "$REGION" 2>/dev/null || true
-    [ "$egress" != "[]" ] && [ "$egress" != "null" ] && \
+        --security-group-rule-ids $ingress_rules --region "$REGION" 2>/dev/null || true
+    [ -n "$egress_rules" ] && \
       aws ec2 revoke-security-group-egress --group-id "$sg" \
-        --ip-permissions "$egress" --region "$REGION" 2>/dev/null || true
+        --security-group-rule-ids $egress_rules --region "$REGION" 2>/dev/null || true
     log "Deleting k8s security group: $sg"
-    aws ec2 delete-security-group --group-id "$sg" --region "$REGION" 2>/dev/null || true
+    if ! aws ec2 delete-security-group --group-id "$sg" --region "$REGION" 2>/dev/null; then
+      warn "Could not delete $sg yet — will retry after Terraform destroy"
+    fi
   }
 
   for sg in $k8s_sgs; do
     delete_sg "$sg"
   done
 
-  if [ -n "$classic_elbs$v2_arns$k8s_sgs" ]; then
-    log "Waiting 60s for ELB ENIs to release..."
-    sleep 60
-  else
+  if [ -z "$classic_elbs$v2_arns$k8s_sgs" ]; then
     log "No Kubernetes ELBs or SGs found."
   fi
   success "Kubernetes ELB cleanup complete."
@@ -496,6 +512,11 @@ destroy_module \
   "EKS cluster, nodes, NAT gateway, ECR repos, WAF, GuardDuty — ~15 min" \
   "aws/eks" \
   "$TF_ROOT/spoke-vpc-eks/terraform.tfvars"
+
+# Second-pass SG cleanup: any k8s SGs that survived the pre-destroy phase
+# (e.g. ENIs held during the initial cleanup window) are deleted now that
+# Terraform has torn down the EKS cluster and all ENIs have been released.
+cleanup_k8s_elbs
 
 destroy_module \
   "bastion" \
