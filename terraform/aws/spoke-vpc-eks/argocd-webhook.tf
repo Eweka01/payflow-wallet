@@ -100,6 +100,8 @@ resource "aws_iam_role" "argocd_webhook_lambda" {
 }
 
 resource "aws_iam_role_policy" "argocd_webhook_lambda" {
+  # checkov:skip=CKV_AWS_355:ec2:Describe/Create/DeleteNetworkInterface requires * resource — AWS does not support resource-level ARNs for these ENI lifecycle actions
+  # checkov:skip=CKV_AWS_290:ec2 ENI lifecycle actions require * resource — not a write action to customer data
   name = "${local.name_prefix}-argocd-webhook-lambda-policy"
   role = aws_iam_role.argocd_webhook_lambda.id
 
@@ -184,6 +186,9 @@ data "archive_file" "argocd_webhook" {
 resource "aws_lambda_function" "argocd_webhook" {
   # checkov:skip=CKV_AWS_116:DLQ not required — API Gateway returns 500 on Lambda error; GitHub retries automatically
   # checkov:skip=CKV_AWS_117:Lambda is in VPC — X-Ray tracing adds cost without matching benefit for a webhook handler
+  # checkov:skip=CKV_AWS_50:X-Ray tracing not enabled — webhook handler has negligible latency; tracing adds cost without benefit
+  # checkov:skip=CKV_AWS_115:Concurrency limit not set — API Gateway throttling is the correct control point for a webhook handler
+  # checkov:skip=CKV_AWS_272:Code signing not configured — portfolio demo; code integrity enforced via ECR image signing in production roadmap
   function_name = "${local.name_prefix}-argocd-webhook"
   description   = "Validates GitHub webhook signature and triggers ArgoCD sync"
   role          = aws_iam_role.argocd_webhook_lambda.arn
@@ -258,6 +263,7 @@ resource "aws_apigatewayv2_integration" "lambda" {
 }
 
 resource "aws_apigatewayv2_route" "webhook" {
+  # checkov:skip=CKV_AWS_309:No API Gateway authorizer needed — GitHub HMAC signature is validated inside the Lambda handler
   api_id    = aws_apigatewayv2_api.argocd_webhook.id
   route_key = "POST /webhook"
   target    = "integrations/${aws_apigatewayv2_integration.lambda.id}"
