@@ -72,6 +72,15 @@ resource "aws_security_group" "bastion" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  # RabbitMQ Management UI (Amazon MQ in spoke-vpc) for SSM port-forward tunneling
+  egress {
+    description = "RabbitMQ Management UI via SSM tunnel"
+    from_port   = 15671
+    to_port     = 15671
+    protocol    = "tcp"
+    cidr_blocks = [var.spoke_vpc_cidr]
+  }
+
   tags = {
     Name = "payflow-bastion-sg"
   }

@@ -32,6 +32,18 @@ resource "aws_security_group" "mq" {
     }
   }
 
+  # Allow Management UI from bastion (hub-vpc private IP) for SSM port-forward tunneling
+  dynamic "ingress" {
+    for_each = var.bastion_private_cidr != null ? [1] : []
+    content {
+      description = "RabbitMQ Management UI from bastion (SSM tunnel)"
+      from_port   = 15671
+      to_port     = 15671
+      protocol    = "tcp"
+      cidr_blocks = [var.bastion_private_cidr]
+    }
+  }
+
   egress {
     description = "Allow all outbound"
     from_port   = 0

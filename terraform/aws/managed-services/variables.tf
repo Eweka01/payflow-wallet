@@ -34,6 +34,12 @@ variable "additional_rds_security_group_ids" {
   default     = []
 }
 
+variable "bastion_private_cidr" {
+  description = "Private IP CIDR of the bastion host (hub-vpc). Grants access to RabbitMQ management UI (port 15671) for SSM port-forward tunneling."
+  type        = string
+  default     = null
+}
+
 # RDS Variables
 variable "postgres_version" {
   description = "PostgreSQL major version for RDS (e.g. 16 or 15). Latest available in region is used."
