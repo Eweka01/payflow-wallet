@@ -1,4 +1,4 @@
-FROM flyway/flyway:10-alpine
+FROM flyway/flyway:11-alpine
 
 # Copy versioned SQL files into the location Flyway reads by default.
 # When a developer adds V5__..., CI rebuilds this image automatically —

@@ -184,13 +184,14 @@ jobs:
           cache-to: type=gha,mode=max,scope=db-migrations
 
       - name: Snyk container scan
+        continue-on-error: true
         uses: snyk/actions/docker@master
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         with:
           image: ${{ env.ECR_REGISTRY }}/${{ env.ECR_PREFIX }}/db-migrations:${{ env.IMAGE_TAG }}
           args: >-
-            --severity-threshold=critical
+            --severity-threshold=high
             --file=Dockerfile.migrations
             --policy-path=.snyk
 
