@@ -224,6 +224,54 @@ else
   fi
 fi
 
+# ── Step 2.5 — Patch argocd-cm with PVC health customization ─────────────────
+# gp2 StorageClass uses WaitForFirstConsumer; postgres-backup PVC stays Pending
+# until the backup CronJob first runs.  ArgoCD treats Pending = Degraded and
+# blocks subsequent sync waves.  This Lua override maps Pending → Progressing.
+banner "STEP 2.5 — argocd-cm PVC health check"
+cat > /tmp/patch_argocd_cm.py <<'PYEOF'
+import subprocess, json, sys
+
+check = subprocess.run(
+    ["kubectl", "get", "configmap", "argocd-cm", "-n", "argocd",
+     "-o", "jsonpath={.data.resource\\.customizations\\.health\\.v1_PersistentVolumeClaim}"],
+    capture_output=True, text=True)
+if check.stdout.strip():
+    print("[ok]    argocd-cm PVC health customization already present")
+    sys.exit(0)
+
+lua = (
+    "hs = {}\n"
+    "if obj.status ~= nil then\n"
+    "  if obj.status.phase == \"Pending\" then\n"
+    "    hs.status = \"Progressing\"\n"
+    "    hs.message = \"Waiting for first consumer\"\n"
+    "    return hs\n"
+    "  end\n"
+    "  if obj.status.phase == \"Bound\" then\n"
+    "    hs.status = \"Healthy\"\n"
+    "    return hs\n"
+    "  end\n"
+    "end\n"
+    "hs.status = \"Progressing\"\n"
+    "return hs\n"
+)
+patch = {"data": {"resource.customizations.health.v1_PersistentVolumeClaim": lua}}
+r = subprocess.run(
+    ["kubectl", "patch", "configmap", "argocd-cm", "-n", "argocd",
+     "--type", "merge", "-p", json.dumps(patch)],
+    capture_output=True, text=True)
+if r.returncode != 0:
+    print("STDERR:", r.stderr, file=sys.stderr)
+    sys.exit(r.returncode)
+print("[ok]    argocd-cm PVC health customization applied")
+PYEOF
+if command -v python3 >/dev/null 2>&1; then
+  python3 /tmp/patch_argocd_cm.py || warn "PVC health patch failed — Pending PVCs may block sync"
+else
+  warn "python3 not found — PVC health patch skipped (apply manually if postgres-backup PVC blocks sync)"
+fi
+
 # ── Step 3 — External Secrets Operator ──────────────────────────────────────
 if [ "\$SKIP_ESO" = "true" ]; then
   warn "Skipping ESO (--skip-eso)"
@@ -262,26 +310,47 @@ fi
 
 # ── Step 5 — ArgoCD Image Updater ────────────────────────────────────────────
 banner "STEP 5 — ArgoCD Image Updater"
-IU_COUNT=\$(kubectl get pods -n argocd \
-  -l app.kubernetes.io/name=argocd-image-updater \
-  --no-headers 2>/dev/null | grep -c Running || true)
-if [ "\$IU_COUNT" -gt 0 ]; then
-  success "Image Updater already running"
-else
-  warn "Image Updater not found — installing (bootstrap node may not have completed)..."
-  helm upgrade --install argocd-image-updater argocd-image-updater \
-    --repo https://argoproj.github.io/argo-helm \
-    --namespace argocd \
-    --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"="\$IMAGE_UPDATER_ROLE" \
-    --set "config.registries[0].name=ECR" \
-    --set "config.registries[0].api_url=https://\${ACCOUNT}.dkr.ecr.\${REGION}.amazonaws.com" \
-    --set "config.registries[0].prefix=\${ACCOUNT}.dkr.ecr.\${REGION}.amazonaws.com" \
-    --set "config.registries[0].credentials=ext:/usr/local/bin/argocd-image-updater-ecr-creds" \
-    --set "config.registries[0].credsexpire=10h" \
-    --version 0.9.6 \
-    --wait --timeout 5m 2>&1 | tail -5
-  success "Image Updater installed"
-fi
+
+# ECR credentials script — Image Updater calls this executable to get a token.
+# It must be mounted into the pod at /usr/local/bin/argocd-image-updater-ecr-creds.
+# Without this, Image Updater logs: "could not stat /usr/local/bin/..." and never
+# pulls from ECR, so global.imageTag is never updated.
+log "Applying ECR credentials ConfigMap..."
+cat > /tmp/ecr-creds-cm.yaml << ECREOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ecr-creds-script
+  namespace: argocd
+data:
+  ecr-creds: |
+    #!/bin/sh
+    aws ecr get-login-password --region \${REGION}
+ECREOF
+kubectl apply -f /tmp/ecr-creds-cm.yaml
+success "ECR credentials ConfigMap applied"
+
+# helm upgrade --install is idempotent: installs on first run, upgrades on re-runs.
+# extraVolumes/extraVolumeMounts mount the ConfigMap as an executable file so
+# Image Updater can call it.  defaultMode 493 = octal 0755 (executable).
+helm upgrade --install argocd-image-updater argocd-image-updater \
+  --repo https://argoproj.github.io/argo-helm \
+  --namespace argocd \
+  --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"="\$IMAGE_UPDATER_ROLE" \
+  --set "config.registries[0].name=ECR" \
+  --set "config.registries[0].api_url=https://\${ACCOUNT}.dkr.ecr.\${REGION}.amazonaws.com" \
+  --set "config.registries[0].prefix=\${ACCOUNT}.dkr.ecr.\${REGION}.amazonaws.com" \
+  --set "config.registries[0].credentials=ext:/usr/local/bin/argocd-image-updater-ecr-creds" \
+  --set "config.registries[0].credsexpire=10h" \
+  --set "extraVolumes[0].name=ecr-creds-script" \
+  --set "extraVolumes[0].configMap.name=ecr-creds-script" \
+  --set "extraVolumes[0].configMap.defaultMode=493" \
+  --set "extraVolumeMounts[0].name=ecr-creds-script" \
+  --set "extraVolumeMounts[0].mountPath=/usr/local/bin/argocd-image-updater-ecr-creds" \
+  --set "extraVolumeMounts[0].subPath=ecr-creds" \
+  --version 0.9.6 \
+  --wait --timeout 5m 2>&1 | tail -5
+success "Image Updater installed with ECR credentials volume mount"
 
 # ── Step 6 — Apply ArgoCD Application manifests ──────────────────────────────
 banner "STEP 6 — ArgoCD Application manifests"
@@ -298,8 +367,29 @@ ${MON_MANIFEST}
 MONEOF
 success "payflow-monitoring Application applied"
 
+# Set global.imageTag to the latest tag already in ECR so ArgoCD never tries
+# to pull a ":latest" tag (which doesn't exist).  Image Updater will keep this
+# updated automatically on every subsequent CI push.
+log "Detecting latest api-gateway tag from ECR..."
+LATEST_TAG=\$(aws ecr describe-images \
+  --repository-name "\${CLUSTER_NAME}/api-gateway" \
+  --region "\$REGION" \
+  --query 'sort_by(imageDetails,&imagePushedAt)[-1].imageTags[0]' \
+  --output text 2>/dev/null || echo "")
+if [ -n "\$LATEST_TAG" ] && [ "\$LATEST_TAG" != "None" ]; then
+  log "Setting global.imageTag → \$LATEST_TAG"
+  kubectl patch application payflow -n argocd --type merge -p \
+    "{\"spec\":{\"source\":{\"helm\":{\"parameters\":[{\"name\":\"global.imageTag\",\"value\":\"\$LATEST_TAG\"}]}}}}" \
+    || warn "Could not patch global.imageTag — ArgoCD may not be ready yet"
+  success "global.imageTag set to \$LATEST_TAG"
+else
+  warn "No ECR images found yet — global.imageTag not set."
+  warn "Push images via CI first, then Image Updater will set the tag automatically."
+fi
+
 # ── Step 7 — Wait for ArgoCD sync ────────────────────────────────────────────
 banner "STEP 7 — Waiting for ArgoCD sync (up to 10 min)"
+DEGRADE_COUNT=0
 for i in \$(seq 1 40); do
   HEALTH=\$(kubectl get application payflow -n argocd \
     -o jsonpath='{.status.health.status}' 2>/dev/null || echo "Unknown")
@@ -307,6 +397,15 @@ for i in \$(seq 1 40); do
     -o jsonpath='{.status.sync.status}' 2>/dev/null || echo "Unknown")
   printf "  [%02d/40] health: %-10s  sync: %s\n" "\$i" "\$HEALTH" "\$SYNC"
   [ "\$HEALTH" = "Healthy" ] && break
+  if [ "\$HEALTH" = "Degraded" ]; then
+    DEGRADE_COUNT=\$((DEGRADE_COUNT + 1))
+    if [ "\$DEGRADE_COUNT" -ge 5 ]; then
+      warn "App has been Degraded for 5+ checks — check ArgoCD UI or run:"
+      warn "  kubectl get events -n payflow --sort-by=.lastTimestamp | tail -20"
+    fi
+  else
+    DEGRADE_COUNT=0
+  fi
   sleep 15
 done
 
@@ -331,8 +430,10 @@ echo ""
 echo "  NEXT STEPS:"
 echo "  1. Run Step 17 (webhook setup) from the deployment guide"
 echo "     — must run from bastion SSM session to reach ArgoCD NLB"
-echo "  2. Fill values-dev.yaml with WAF ARN + certificate ARN from spinup.sh output"
-echo "  3. git commit + push values-dev.yaml to trigger first ArgoCD sync"
+echo "  2. If values-dev.yaml WAF ARN is not yet filled in:"
+echo "     git commit + push to trigger CI → images built and pushed to ECR"
+echo "  3. Image Updater will detect new ECR tags and update global.imageTag"
+echo "  4. ArgoCD auto-sync (prune + selfHeal) will deploy all services"
 BASTION_EOF
 
 success "Bastion script generated ($(wc -l < "$BASTION_SCRIPT") lines)"
