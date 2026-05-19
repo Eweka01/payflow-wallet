@@ -125,6 +125,13 @@ MON_MANIFEST=$(cat "$REPO_ROOT/helm/argocd/monitoring-application.yaml") \
   || error "helm/argocd/monitoring-application.yaml not found in $REPO_ROOT"
 success "ArgoCD manifests loaded"
 
+# Pre-encode ECR creds script as base64 so the unquoted BASTION_EOF heredoc
+# below can embed a literal b64 string instead of expanding $(aws ecr ...) locally.
+# The bastion decodes this at runtime, producing a dynamic script that calls
+# aws ecr get-login-password fresh each time (ECR tokens expire after 12 hours).
+ECR_CREDS_B64=$(printf '#!/bin/sh\nprintf "AWS:%%s" "$(aws ecr get-login-password --region %s)"\n' "$REGION" | base64 | tr -d '\n')
+success "ECR creds script pre-encoded"
+
 # =============================================================================
 # PART 3 — GENERATE BASTION SCRIPT
 # =============================================================================
@@ -301,7 +308,7 @@ fi
 # Ingress exists in Kubernetes but no real ALB is ever created — the app
 # is unreachable from the internet.
 banner "STEP 4 — AWS Load Balancer Controller"
-ALB_ROLE_ARN="arn:aws:iam://\${ACCOUNT}:role/\${CLUSTER_NAME}-alb-controller-irsa"
+ALB_ROLE_ARN="arn:aws:iam::\${ACCOUNT}:role/\${CLUSTER_NAME}-alb-controller-irsa"
 VPC_ID=\$(aws eks describe-cluster --name "\$CLUSTER_NAME" --region "\$REGION" \
   --query "cluster.resourcesVpcConfig.vpcId" --output text 2>/dev/null || echo "")
 
@@ -343,18 +350,15 @@ banner "STEP 5 — ArgoCD Image Updater"
 # Without this, Image Updater logs: "could not stat /usr/local/bin/..." and never
 # pulls from ECR, so global.imageTag is never updated.
 log "Applying ECR credentials ConfigMap..."
-cat > /tmp/ecr-creds-cm.yaml << ECREOF
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: ecr-creds-script
-  namespace: argocd
-data:
-  ecr-creds: |
-    #!/bin/sh
-    printf "AWS:%s" "$(aws ecr get-login-password --region \${REGION})"
-ECREOF
-kubectl apply -f /tmp/ecr-creds-cm.yaml
+# ${ECR_CREDS_B64} is expanded by the outer BASTION_EOF heredoc to the literal
+# base64 string computed on the local machine.  Decoding on the bastion produces
+# a dynamic script that calls aws ecr get-login-password at runtime — tokens are
+# never embedded statically and always fresh when Image Updater calls the script.
+echo "${ECR_CREDS_B64}" | base64 -d > /tmp/ecr-creds.sh
+chmod +x /tmp/ecr-creds.sh
+kubectl create configmap ecr-creds-script \
+  --from-file=ecr-creds=/tmp/ecr-creds.sh \
+  -n argocd --dry-run=client -o yaml | kubectl apply -f -
 success "ECR credentials ConfigMap applied"
 
 # helm upgrade --install is idempotent: installs on first run, upgrades on re-runs.
