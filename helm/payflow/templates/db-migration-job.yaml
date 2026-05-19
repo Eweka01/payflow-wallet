@@ -60,4 +60,4 @@ spec:
         command:
         - sh
         - -c
-        - 'flyway -url="jdbc:postgresql://${DB_HOST}:${DB_PORT}/${DB_NAME}?sslmode=require" migrate'
+        - 'flyway -url="jdbc:postgresql://${DB_HOST}:${DB_PORT}/${DB_NAME}?sslmode=require" repair migrate'
