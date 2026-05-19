@@ -375,28 +375,50 @@ cleanup_k8s_elbs() {
     aws elbv2 delete-load-balancer --load-balancer-arn "$arn" --region "$REGION" 2>/dev/null || true
   done
 
-  # Delete k8s-elb-* security groups left behind after ELB deletion
+  # Delete all K8s-managed security groups in the spoke VPC:
+  #   k8s-elb-*            — classic in-tree controller
+  #   k8s-traffic-*        — AWS Load Balancer Controller (shared backend SG)
+  #   tagged elbv2.k8s.aws/cluster — AWS Load Balancer Controller (frontend SG)
   local k8s_sgs
-  k8s_sgs=$(aws ec2 describe-security-groups \
-    --filters "Name=vpc-id,Values=$spoke_vpc" "Name=group-name,Values=k8s-elb-*" \
-    --query 'SecurityGroups[].GroupId' --output text --region "$REGION" 2>/dev/null || true)
-  for sg in $k8s_sgs; do
-    # Revoke all rules first (SGs may reference each other)
-    aws ec2 revoke-security-group-ingress --group-id "$sg" \
-      --ip-permissions "$(aws ec2 describe-security-groups --group-ids "$sg" \
-        --query 'SecurityGroups[0].IpPermissions' --output json --region "$REGION" 2>/dev/null)" \
-      --region "$REGION" 2>/dev/null || true
-    aws ec2 revoke-security-group-egress --group-id "$sg" \
-      --ip-permissions "$(aws ec2 describe-security-groups --group-ids "$sg" \
-        --query 'SecurityGroups[0].IpPermissionsEgress' --output json --region "$REGION" 2>/dev/null)" \
-      --region "$REGION" 2>/dev/null || true
-    log "Deleting k8s ELB security group: $sg"
+  k8s_sgs=$(
+    {
+      aws ec2 describe-security-groups \
+        --filters "Name=vpc-id,Values=$spoke_vpc" "Name=group-name,Values=k8s-elb-*" \
+        --query 'SecurityGroups[].GroupId' --output text --region "$REGION" 2>/dev/null || true
+      aws ec2 describe-security-groups \
+        --filters "Name=vpc-id,Values=$spoke_vpc" "Name=group-name,Values=k8s-traffic-*" \
+        --query 'SecurityGroups[].GroupId' --output text --region "$REGION" 2>/dev/null || true
+      aws ec2 describe-security-groups \
+        --filters "Name=vpc-id,Values=$spoke_vpc" "Name=tag-key,Values=elbv2.k8s.aws/cluster" \
+        --query 'SecurityGroups[].GroupId' --output text --region "$REGION" 2>/dev/null || true
+    } | tr '\t' '\n' | sort -u | xargs
+  )
+
+  delete_sg() {
+    local sg="$1"
+    [ -z "$sg" ] && return 0
+    local ingress egress
+    ingress=$(aws ec2 describe-security-groups --group-ids "$sg" \
+      --query 'SecurityGroups[0].IpPermissions' --output json --region "$REGION" 2>/dev/null || echo "[]")
+    egress=$(aws ec2 describe-security-groups --group-ids "$sg" \
+      --query 'SecurityGroups[0].IpPermissionsEgress' --output json --region "$REGION" 2>/dev/null || echo "[]")
+    [ "$ingress" != "[]" ] && [ "$ingress" != "null" ] && \
+      aws ec2 revoke-security-group-ingress --group-id "$sg" \
+        --ip-permissions "$ingress" --region "$REGION" 2>/dev/null || true
+    [ "$egress" != "[]" ] && [ "$egress" != "null" ] && \
+      aws ec2 revoke-security-group-egress --group-id "$sg" \
+        --ip-permissions "$egress" --region "$REGION" 2>/dev/null || true
+    log "Deleting k8s security group: $sg"
     aws ec2 delete-security-group --group-id "$sg" --region "$REGION" 2>/dev/null || true
+  }
+
+  for sg in $k8s_sgs; do
+    delete_sg "$sg"
   done
 
   if [ -n "$classic_elbs$v2_arns$k8s_sgs" ]; then
-    log "Waiting 20s for ELB ENIs to release..."
-    sleep 20
+    log "Waiting 60s for ELB ENIs to release..."
+    sleep 60
   else
     log "No Kubernetes ELBs or SGs found."
   fi
@@ -404,6 +426,59 @@ cleanup_k8s_elbs() {
 }
 
 cleanup_k8s_elbs
+
+# EBS volumes created by Kubernetes dynamic provisioning (gp2 StorageClass) are
+# NOT in Terraform state — the storage provisioner creates them outside Terraform.
+# When EKS is deleted by Terraform without a graceful K8s shutdown, these volumes
+# are orphaned (state = available). They block nothing but cost money indefinitely.
+cleanup_eks_ebs_volumes() {
+  local cluster_name="payflow-eks-cluster"
+  log "Checking for EBS volumes tagged with cluster: $cluster_name ..."
+
+  local volumes
+  volumes=$(aws ec2 describe-volumes --region "$REGION" \
+    --filters "Name=tag-key,Values=kubernetes.io/cluster/${cluster_name}" \
+    --query 'Volumes[*].VolumeId' --output text 2>/dev/null || true)
+
+  if [ -z "$volumes" ]; then
+    log "No EKS-tagged EBS volumes found."
+    return 0
+  fi
+
+  log "Found EKS-tagged volumes: $volumes"
+
+  # Force-detach any that are still in-use
+  for vol in $volumes; do
+    local state
+    state=$(aws ec2 describe-volumes --volume-ids "$vol" --region "$REGION" \
+      --query 'Volumes[0].State' --output text 2>/dev/null || echo "deleted")
+    if [ "$state" = "in-use" ]; then
+      log "Force-detaching in-use volume: $vol"
+      aws ec2 detach-volume --volume-id "$vol" --force --region "$REGION" 2>/dev/null || true
+    fi
+  done
+
+  # Wait for detachments to settle
+  log "Waiting 20s for detachments to complete..."
+  sleep 20
+
+  # Delete all
+  for vol in $volumes; do
+    local state
+    state=$(aws ec2 describe-volumes --volume-ids "$vol" --region "$REGION" \
+      --query 'Volumes[0].State' --output text 2>/dev/null || echo "deleted")
+    if [ "$state" = "available" ]; then
+      log "Deleting EBS volume: $vol"
+      aws ec2 delete-volume --volume-id "$vol" --region "$REGION" 2>/dev/null || true
+    else
+      warn "Volume $vol is in state '$state' — skipping"
+    fi
+  done
+
+  success "EBS volume cleanup complete."
+}
+
+cleanup_eks_ebs_volumes
 
 # =============================================================================
 # DESTROY SEQUENCE — reverse of spinup order
@@ -466,13 +541,21 @@ EC2=$(aws ec2 describe-instances --region "$REGION" \
 RDS=$(aws rds describe-db-instances --region "$REGION" \
   --query 'DBInstances[?DBInstanceStatus!=`deleting`].DBInstanceIdentifier' \
   --output text 2>/dev/null)
+MQ=$(aws mq list-brokers --region "$REGION" \
+  --query 'BrokerSummaries[?BrokerState!=`DELETION_IN_PROGRESS`].BrokerName' \
+  --output text 2>/dev/null)
+REDIS=$(aws elasticache describe-cache-clusters --region "$REGION" \
+  --query 'CacheClusters[?CacheClusterStatus!=`deleting`].CacheClusterId' \
+  --output text 2>/dev/null)
 
 ISSUES=0
-[ -z "$EKS" ] && success "EKS clusters:    none" || { warn "EKS still running: $EKS"; ISSUES=$((ISSUES+1)); }
-[ -z "$NAT" ] && success "NAT gateways:    none" || { warn "NAT still running: $NAT"; ISSUES=$((ISSUES+1)); }
-[ -z "$TGW" ] && success "Transit GWs:     none" || { warn "TGW still active:  $TGW"; ISSUES=$((ISSUES+1)); }
-[ -z "$EC2" ] && success "EC2 instances:   none" || { warn "EC2 still running: $EC2"; ISSUES=$((ISSUES+1)); }
-[ -z "$RDS" ] && success "RDS instances:   none" || { warn "RDS still running: $RDS"; ISSUES=$((ISSUES+1)); }
+[ -z "$EKS"   ] && success "EKS clusters:    none" || { warn "EKS still running:   $EKS";   ISSUES=$((ISSUES+1)); }
+[ -z "$NAT"   ] && success "NAT gateways:    none" || { warn "NAT still running:   $NAT";   ISSUES=$((ISSUES+1)); }
+[ -z "$TGW"   ] && success "Transit GWs:     none" || { warn "TGW still active:    $TGW";   ISSUES=$((ISSUES+1)); }
+[ -z "$EC2"   ] && success "EC2 instances:   none" || { warn "EC2 still running:   $EC2";   ISSUES=$((ISSUES+1)); }
+[ -z "$RDS"   ] && success "RDS instances:   none" || { warn "RDS still running:   $RDS";   ISSUES=$((ISSUES+1)); }
+[ -z "$MQ"    ] && success "Amazon MQ:       none" || { warn "MQ still running:    $MQ";    ISSUES=$((ISSUES+1)); }
+[ -z "$REDIS" ] && success "ElastiCache:     none" || { warn "Redis still running: $REDIS"; ISSUES=$((ISSUES+1)); }
 
 END_TIME=$(date +%s)
 ELAPSED=$(( (END_TIME - START_TIME) / 60 ))
