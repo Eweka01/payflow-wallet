@@ -18,6 +18,19 @@ env:
 # ──────────────────────────────────────────────────────────────────────────────
 jobs:
 
+  # Generates a single shared image tag used by ALL Stage 2 build jobs.
+  # Without this, each matrix job calls `date` independently and every
+  # service gets a different timestamp-tag — breaking global.imageTag in Helm.
+  prepare:
+    name: "Generate image tag"
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.tag.outputs.image_tag }}
+    steps:
+      - name: Set shared image tag
+        id: tag
+        run: echo "image_tag=$(date -u +%Y%m%d%H%M%S)-${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+
   lint:
     name: "Stage 1 | ESLint"
     runs-on: ubuntu-latest
@@ -90,7 +103,9 @@ jobs:
   build-scan-push:
     name: "Stage 2 | Build / Scan / Push — ${{ matrix.service }}"
     runs-on: ubuntu-latest
-    needs: [lint, sonarcloud, snyk-sca]
+    needs: [lint, sonarcloud, snyk-sca, prepare]
+    env:
+      IMAGE_TAG: ${{ needs.prepare.outputs.image_tag }}
 
     permissions:
       id-token: write
@@ -111,9 +126,6 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: docker/setup-buildx-action@v3
-
-      - name: Set image tag
-        run: echo "IMAGE_TAG=$(date -u +%Y%m%d%H%M%S)-${GITHUB_SHA::7}" >> $GITHUB_ENV
 
       - name: Build image
         uses: docker/build-push-action@v5
@@ -159,7 +171,9 @@ jobs:
   build-scan-push-migrations:
     name: "Stage 2 | Build / Scan / Push — db-migrations"
     runs-on: ubuntu-latest
-    needs: [lint, sonarcloud, snyk-sca]
+    needs: [lint, sonarcloud, snyk-sca, prepare]
+    env:
+      IMAGE_TAG: ${{ needs.prepare.outputs.image_tag }}
 
     permissions:
       id-token: write
@@ -169,9 +183,6 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: docker/setup-buildx-action@v3
-
-      - name: Set image tag
-        run: echo "IMAGE_TAG=$(date -u +%Y%m%d%H%M%S)-${GITHUB_SHA::7}" >> $GITHUB_ENV
 
       - name: Build image
         uses: docker/build-push-action@v5
