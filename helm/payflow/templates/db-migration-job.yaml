@@ -28,8 +28,6 @@ spec:
             cpu: "500m"
             memory: "256Mi"
         env:
-        - name: FLYWAY_URL
-          value: "jdbc:postgresql://$(DB_HOST):$(DB_PORT)/$(DB_NAME)?sslmode=require"
         - name: FLYWAY_USER
           valueFrom:
             secretKeyRef:
@@ -60,5 +58,6 @@ spec:
               name: app-config
               key: DB_NAME
         command:
-        - flyway
-        - migrate
+        - sh
+        - -c
+        - 'flyway -url="jdbc:postgresql://${DB_HOST}:${DB_PORT}/${DB_NAME}?sslmode=require" migrate'
