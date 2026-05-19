@@ -6,8 +6,9 @@ metadata:
   labels:
     {{- include "payflow.labels" . | nindent 4 }}
   annotations:
-    argocd.argoproj.io/sync-wave: "2"  # runs after ESO has synced db-secrets (wave 1)
-    argocd.argoproj.io/sync-options: Replace=true  # Job spec is immutable; replace instead of patch
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: HookSucceeded
+    argocd.argoproj.io/sync-wave: "2"
 spec:
   backoffLimit: 3
   ttlSecondsAfterFinished: 3600
@@ -16,8 +17,6 @@ spec:
       restartPolicy: OnFailure
       containers:
       - name: db-migration
-        # migrations image: flyway/flyway base + migrations/ SQL files baked in by CI.
-        # Adding a new migration = add a V5__*.sql file; CI rebuilds the image automatically.
         image: {{ .Values.global.registry }}/{{ .Values.global.imagePrefix }}/db-migrations:{{ .Values.global.imageTag }}
         securityContext:
           allowPrivilegeEscalation: false
