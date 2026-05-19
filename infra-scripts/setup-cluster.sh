@@ -227,14 +227,16 @@ fi
 # ── Step 2.5 — Patch argocd-cm with PVC health customization ─────────────────
 # gp2 StorageClass uses WaitForFirstConsumer; postgres-backup PVC stays Pending
 # until the backup CronJob first runs.  ArgoCD treats Pending = Degraded and
-# blocks subsequent sync waves.  This Lua override maps Pending → Progressing.
+# blocks subsequent sync waves.  This Lua override maps Pending → Healthy so
+# ArgoCD can proceed past the sync wave without waiting for the CronJob to run.
+# Key format for core K8s resources: just the Kind name, no group/version prefix.
 banner "STEP 2.5 — argocd-cm PVC health check"
 cat > /tmp/patch_argocd_cm.py <<'PYEOF'
 import subprocess, json, sys
 
 check = subprocess.run(
     ["kubectl", "get", "configmap", "argocd-cm", "-n", "argocd",
-     "-o", "jsonpath={.data.resource\\.customizations\\.health\\.v1_PersistentVolumeClaim}"],
+     "-o", "jsonpath={.data.resource\\.customizations\\.health\\.PersistentVolumeClaim}"],
     capture_output=True, text=True)
 if check.stdout.strip():
     print("[ok]    argocd-cm PVC health customization already present")
@@ -244,8 +246,8 @@ lua = (
     "hs = {}\n"
     "if obj.status ~= nil then\n"
     "  if obj.status.phase == \"Pending\" then\n"
-    "    hs.status = \"Progressing\"\n"
-    "    hs.message = \"Waiting for first consumer\"\n"
+    "    hs.status = \"Healthy\"\n"
+    "    hs.message = \"Waiting for first consumer (WaitForFirstConsumer storage class)\"\n"
     "    return hs\n"
     "  end\n"
     "  if obj.status.phase == \"Bound\" then\n"
@@ -256,7 +258,7 @@ lua = (
     "hs.status = \"Progressing\"\n"
     "return hs\n"
 )
-patch = {"data": {"resource.customizations.health.v1_PersistentVolumeClaim": lua}}
+patch = {"data": {"resource.customizations.health.PersistentVolumeClaim": lua}}
 r = subprocess.run(
     ["kubectl", "patch", "configmap", "argocd-cm", "-n", "argocd",
      "--type", "merge", "-p", json.dumps(patch)],
