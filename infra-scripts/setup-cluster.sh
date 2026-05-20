@@ -67,8 +67,9 @@ trap 'rm -f "$BASTION_SCRIPT" "$PARAMS_FILE"' EXIT
 # =============================================================================
 banner "PRE-FLIGHT CHECKS (local)"
 
-command -v aws > /dev/null 2>&1 || error "aws CLI not found. Install: brew install awscli"
-command -v jq  > /dev/null 2>&1 || error "jq not found. Install: brew install jq"
+command -v aws  > /dev/null 2>&1 || error "aws CLI not found. Install: brew install awscli"
+command -v jq   > /dev/null 2>&1 || error "jq not found. Install: brew install jq"
+command -v helm > /dev/null 2>&1 || error "helm not found. Install: brew install helm"
 
 ACCOUNT=$(aws sts get-caller-identity --query Account --output text --region "$REGION" 2>/dev/null) \
   || error "AWS CLI not configured. Run: aws configure"
@@ -131,6 +132,24 @@ success "ArgoCD manifests loaded"
 # aws ecr get-login-password fresh each time (ECR tokens expire after 12 hours).
 ECR_CREDS_B64=$(printf '#!/bin/sh\nprintf "AWS:%%s" "$(aws ecr get-login-password --region %s)"\n' "$REGION" | base64 | tr -d '\n')
 success "ECR creds script pre-encoded"
+
+# Pre-render the bootstrap resources (ClusterSecretStore, ExternalSecrets, ConfigMap) that the
+# PreSync migration hook needs before it runs.  ArgoCD applies these in sync-waves 0/1/-1, but
+# the PreSync hook runs BEFORE any waves — so on a fresh cluster db-secrets doesn't exist yet
+# and the migration job fails with CreateContainerConfigError.  Fix: apply them manually via
+# setup-cluster.sh Step 3.5, right after ESO is ready.
+log "Pre-rendering bootstrap ESO + ConfigMap YAML via helm template..."
+BOOTSTRAP_YAML=$(helm template payflow "$REPO_ROOT/helm/payflow" \
+  -f "$REPO_ROOT/helm/payflow/values.yaml" \
+  -f "$REPO_ROOT/helm/payflow/values-dev.yaml" \
+  --namespace payflow \
+  --set global.imageTag=placeholder \
+  -s templates/clustersecretstore.yaml \
+  -s templates/externalsecret.yaml \
+  -s templates/configmap.yaml 2>/dev/null) \
+  || error "helm template failed. Is the payflow chart valid? Run: helm lint helm/payflow"
+BOOTSTRAP_YAML_B64=$(echo "$BOOTSTRAP_YAML" | base64 | tr -d '\n')
+success "Bootstrap YAML pre-rendered (ClusterSecretStore + ExternalSecrets + ConfigMap)"
 
 # =============================================================================
 # PART 3 — GENERATE BASTION SCRIPT
@@ -301,6 +320,36 @@ else
       --wait --timeout 3m 2>&1 | tail -5
     success "ESO installed with IRSA: \$ESO_ROLE_ARN"
   fi
+fi
+
+# ── Step 3.5 — Bootstrap ESO resources ─────────────────────────────────────
+# The db-migration PreSync hook needs db-secrets and app-config to exist BEFORE
+# it runs.  ArgoCD applies these in sync-waves 0/1/-1 (main sync), but PreSync
+# runs before all waves.  On a fresh cluster this causes a deadlock:
+#   PreSync needs db-secrets → db-secrets requires ExternalSecret → ExternalSecret
+#   is created by the main sync → main sync only runs after PreSync succeeds.
+# Fix: apply ClusterSecretStore + ExternalSecrets + ConfigMap manually here so
+# ESO can create db-secrets before ArgoCD's first sync attempt.
+banner "STEP 3.5 — Bootstrap ESO resources (pre-migration secrets)"
+kubectl create namespace payflow 2>/dev/null || true
+log "Applying ClusterSecretStore, ExternalSecrets, and ConfigMap..."
+echo "${BOOTSTRAP_YAML_B64}" | base64 -d | kubectl apply -f - 2>&1
+log "Waiting for ESO to create db-secrets (up to 2 minutes)..."
+SECRET_READY=0
+for i in \$(seq 1 24); do
+  if kubectl get secret db-secrets -n payflow &>/dev/null; then
+    SECRET_READY=1
+    break
+  fi
+  printf "."; sleep 5
+done
+echo ""
+if [ "\$SECRET_READY" -eq 1 ]; then
+  success "db-secrets synced by ESO"
+else
+  warn "db-secrets not yet present after 2 minutes."
+  warn "Check ESO logs: kubectl logs -n external-secrets -l app.kubernetes.io/name=external-secrets"
+  warn "The migration PreSync hook may fail — retry the sync after secrets appear."
 fi
 
 # ── Step 4 — AWS Load Balancer Controller ────────────────────────────────────
