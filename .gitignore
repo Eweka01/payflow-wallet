@@ -192,3 +192,7 @@ payflow-*.tar
 # Architecture diagrams (generated)
 architecture-diagram.py
 payflow-architecture*.png
+
+# Tutorial script (kept local — not part of deployable source)
+TUTORIAL-VIDEO-SCRIPT.md
+TUTORIAL-VIDEO-SCRIPT.pdf

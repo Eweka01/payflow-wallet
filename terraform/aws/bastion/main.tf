@@ -130,6 +130,8 @@ resource "aws_iam_role_policy" "bastion_eks" {
 }
 
 # EC2/SSM read-only and scoped StartSession for operating from the bastion
+data "aws_caller_identity" "current" {}
+
 resource "aws_iam_role_policy" "bastion_operate" {
   # checkov:skip=CKV_AWS_355:EC2/SSM describe actions require * resource; no resource-level permissions available for DescribeInstances/DescribeSessions
   # checkov:skip=CKV_AWS_290:TerminateInstances is scoped to instances tagged payflow-* via Condition; Checkov cannot evaluate tag conditions
@@ -159,6 +161,49 @@ resource "aws_iam_role_policy" "bastion_operate" {
         Condition = {
           StringLike = {
             "ec2:ResourceTag/Name" = "payflow-*"
+          }
+        }
+      }
+    ]
+  })
+}
+
+# Secrets Manager — post-deploy placeholder secrets only (webhook secret, ArgoCD token + URL).
+# These three secrets are created by spoke-vpc-eks Terraform with placeholder values and must
+# be updated from the bastion after ArgoCD is deployed and the NLB hostname is known.
+resource "aws_iam_role_policy" "bastion_secrets" {
+  name = "payflow-bastion-secrets-policy"
+  role = aws_iam_role.bastion.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:UpdateSecret",
+          "secretsmanager:GetSecretValue",
+          "secretsmanager:DescribeSecret"
+        ]
+        Resource = [
+          "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:payflow/${var.environment}/github-webhook-secret*",
+          "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:payflow/${var.environment}/argocd-token*",
+          "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:payflow/${var.environment}/argocd-internal-url*"
+        ]
+      },
+      {
+        # GenerateDataKey encrypts the new secret value; Decrypt reads the current value.
+        # Key uses default account root policy so IAM grants here are sufficient.
+        Effect = "Allow"
+        Action = [
+          "kms:GenerateDataKey",
+          "kms:Decrypt",
+          "kms:DescribeKey"
+        ]
+        Resource = "arn:aws:kms:${var.aws_region}:${data.aws_caller_identity.current.account_id}:key/*"
+        Condition = {
+          StringEquals = {
+            "kms:ViaService" = "secretsmanager.${var.aws_region}.amazonaws.com"
           }
         }
       }
