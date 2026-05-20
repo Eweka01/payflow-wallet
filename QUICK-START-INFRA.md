@@ -154,22 +154,17 @@ terraform apply -target=aws_eks_addon.vpc_cni
 - **Bastion host** — for kubectl (required for verification steps)
 - **SSM Session Manager** — for node access (no kubectl on nodes)
 
-**Verify CNI is ready (run from bastion; see Step 5 for SSH/SSM setup):**
+**Verify CNI is ready (bastion via SSM — deploy bastion first in Step 5):**
 
-**Option A: Via Bastion Host** (if already deployed):
 ```bash
-# SSH to bastion
-ssh -i ~/.ssh/payflow-bastion-key.pem ec2-user@<bastion-ip>
-
-# Configure kubectl on bastion
+aws ssm start-session --target <bastion-instance-id> --region us-east-1
+# On bastion (ubuntu user):
 aws eks update-kubeconfig --name payflow-eks-cluster --region us-east-1
-
-# Check CNI pods
 kubectl get pods -n kube-system -l k8s-app=aws-node
 # Wait until all pods are Running
 ```
 
-**Option B: Via SSM Session Manager** (for node access):
+**Or check node-level via SSM (no kubectl needed):**
 ```bash
 # List EKS nodes (get instance IDs)
 aws ec2 describe-instances \
@@ -181,48 +176,13 @@ aws ec2 describe-instances \
 aws ssm start-session --target <instance-id>
 ```
 
-### Step 3.4: On-Demand Node Group
-
-```bash
-terraform apply -target=aws_eks_node_group.on_demand
-```
-
-**Why:** Stateful services need stable nodes.
-
-**Time:** ~10 minutes
-
-**Verify nodes are ready (run from bastion for kubectl; or use SSM for node-level checks):**
-
-**Via SSM Session Manager (node-level only):**
-```bash
-# Get node instance IDs
-aws ec2 describe-instances \
-  --filters "Name=tag:kubernetes.io/cluster/payflow-eks-cluster,Values=owned" \
-            "Name=tag:eks:nodegroup-name,Values=payflow-on-demand" \
-  --query 'Reservations[*].Instances[*].[InstanceId,PrivateIpAddress,State.Name]' \
-  --output table
-
-# Connect to a node via SSM
-aws ssm start-session --target <instance-id>
-
-# Once connected to node, check status
-sudo systemctl status kubelet
-```
-
-**Via Bastion Host (kubectl):**
-```bash
-# SSH to bastion (see Step 5 for SSH/SSM config), then:
-kubectl get nodes -l workload-type=stateful
-# Wait until all nodes are Ready
-```
-
-### Step 3.5: Spot Node Group
+### Step 3.4: SPOT Node Group
 
 ```bash
 terraform apply -target=aws_eks_node_group.spot
 ```
 
-**Why:** Stateless services can run on cheaper spot instances.
+**Why:** Dev environment uses SPOT t3.large nodes (desired 2, min 1, max 3). Prod uses ON_DEMAND — change `var.environment` to `prod` for that.
 
 **Time:** ~10 minutes
 
@@ -250,34 +210,15 @@ terraform apply
 
 **Time:** ~5 minutes
 
-**Verify cluster is ready (run from bastion; see Step 5 for SSH/SSM setup):**
-
-**⚠️ IMPORTANT:** EKS endpoint is private. You must access via Bastion host:
+**Verify cluster is ready (bastion via SSM):**
 
 ```bash
-# SSH to bastion host
-ssh -i ~/.ssh/payflow-bastion-key.pem ec2-user@<bastion-ip>
-
-# Configure kubectl on bastion
+aws ssm start-session --target <bastion-instance-id> --region us-east-1
+# On bastion:
 aws eks update-kubeconfig --name payflow-eks-cluster --region us-east-1
-
-# Verify cluster access
 kubectl cluster-info
 kubectl get nodes
 # Should show all nodes Ready
-```
-
-**Alternative: Verify nodes via SSM:**
-```bash
-# List all EKS nodes
-aws ec2 describe-instances \
-  --filters "Name=tag:kubernetes.io/cluster/payflow-eks-cluster,Values=owned" \
-  --query 'Reservations[*].Instances[*].[InstanceId,PrivateIpAddress,State.Name,LaunchTime]' \
-  --output table
-
-# Connect to a node to verify it's running Kubernetes
-aws ssm start-session --target <instance-id>
-# Then check: sudo systemctl status kubelet
 ```
 
 ---
@@ -367,147 +308,214 @@ aws eks update-kubeconfig --name payflow-eks-cluster --region us-east-1
 kubectl get nodes
 ```
 
-**Or connect via SSH:** `ssh -i ~/.ssh/payflow-bastion-key.pem ec2-user@<bastion-public-ip>` (get IP from `terraform output bastion_public_ip`).
+**Bastion access is SSM-only — no SSH keys, no open port 22 required.** All sessions are logged to CloudTrail automatically.
 
-**Optional — SSH config:** Add to `~/.ssh/config` so you can run `ssh payflow-bastion`:
-```sshconfig
-# Key-based SSH
-Host payflow-bastion
-  HostName <bastion-public-ip>
-  User ec2-user
-  IdentityFile ~/.ssh/payflow-bastion-key.pem
-```
-To use SSH over SSM (no port 22, use instance ID as HostName):
+**Optional SSH over SSM** (if you need SCP or local port-forwarding via SSH):
 ```sshconfig
 Host payflow-bastion-ssm
   HostName <bastion-instance-id>
-  User ec2-user
+  User ubuntu
   ProxyCommand aws ssm start-session --target %h --document-name AWS-StartSSHSession --parameters portNumber=%p
 ```
-Then: `ssh payflow-bastion-ssm` (requires Session Manager plugin: `session-manager-plugin`).
+Then: `ssh payflow-bastion-ssm` (requires Session Manager plugin installed locally).
 
 **Note:** For EKS node access (no kubectl on nodes), use `aws ssm start-session --target <node-instance-id>` (see Step 3.3).
 
 ---
 
-## Step 6: Deploy Application to Kubernetes
+## Step 6: Run setup-cluster.sh
 
-**Build and push images (ECR tag immutability):**  
-ECR repositories use **immutable tags** by default, so you cannot overwrite `latest`. Build and push with a **new tag** (e.g. `v1` or `$(git rev-parse --short HEAD)`), then deploy with that tag:
+This script runs **from your local machine** after `spinup.sh` completes. It uses SSM Run Command to install ArgoCD, ESO, ALB Controller, ArgoCD Image Updater, and apply both ArgoCD Application manifests — no SSH keys or bastion login required.
 
 ```bash
-# From repo root — set one tag for this release
-export TAG="${TAG:-v1}"   # or: export TAG=$(git rev-parse --short HEAD)
-
-# ECR login
-aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 334091769766.dkr.ecr.us-east-1.amazonaws.com
-
-# Build and push (context = services/ so shared/ is included)
-for svc in api-gateway auth-service wallet-service transaction-service notification-service frontend; do
-  docker build -t 334091769766.dkr.ecr.us-east-1.amazonaws.com/payflow-eks-cluster/${svc}:${TAG} -f services/${svc}/Dockerfile ./services
-  docker push 334091769766.dkr.ecr.us-east-1.amazonaws.com/payflow-eks-cluster/${svc}:${TAG}
-done
+# From repo root
+./infra-scripts/setup-cluster.sh
 ```
 
-Then deploy using that tag:
+**Flags:**
+- `--skip-argocd` — skip ArgoCD install (already installed)
+- `--skip-eso` — skip ESO install (already installed)
+
+**What it does:**
+1. Verifies EKS cluster is ACTIVE and bastion SSM is Online
+2. Configures kubeconfig on the bastion
+3. Installs ArgoCD and patches the service to an internal NLB (VPC-only)
+4. Patches `argocd-cm` with PVC health Lua override (prevents Pending PVCs from blocking sync)
+5. Installs External Secrets Operator with IRSA annotation
+6. Installs AWS Load Balancer Controller + metrics-server
+7. Installs ArgoCD Image Updater with ECR credentials volume
+8. Applies `helm/argocd/application.yaml` and `helm/argocd/monitoring-application.yaml`
+9. Patches `global.imageTag` to the latest ECR tag so ArgoCD never pulls `:latest`
+10. Waits up to 10 minutes for the `payflow` app to become Healthy
+
+**Time:** ~10–15 minutes
+
+**When it completes, the output shows:**
+```
+  ArgoCD NLB (VPC-only):  https://<nlb-hostname>
+  ArgoCD admin password:  <password>
+```
+
+Save both — you need them in the post-setup steps below.
+
+**Verify deployment (via bastion — SSM only, no SSH key):**
 
 ```bash
-cd k8s/overlays/eks
-IMAGE_TAG=$TAG ./deploy.sh
+# Connect to bastion
+aws ssm start-session --target <bastion-instance-id> --region us-east-1
+
+# Configure kubectl (on bastion)
+aws eks update-kubeconfig --name payflow-eks-cluster --region us-east-1
+
+# Check pods
+kubectl get pods -n payflow
+kubectl get pods -n argocd
+
+kubectl get svc -n payflow
+kubectl get ingress -n payflow
+kubectl logs -n payflow deployment/api-gateway --tail=30
 ```
 
 ---
 
-Now deploy the PayFlow application services to your EKS cluster.
+## Post-Setup Steps (required after setup-cluster.sh)
+
+These steps must be completed after `setup-cluster.sh` finishes. The app will not function correctly without them.
+
+### Step A — Update WAF ARN in values-dev.yaml
+
+The WAF ARN is unique per spinup. Get the current value and commit it:
 
 ```bash
-cd k8s/overlays/eks
-./deploy.sh
+# Get the current WAF ARN (run from repo root, workspace must be dev)
+cd terraform/aws/spoke-vpc-eks
+terraform workspace select dev
+terraform output -raw waf_web_acl_arn
 ```
 
-**What the script does:**
-1. ✅ Verifies Terraform backend files exist
-2. ✅ Gets AWS Account ID automatically
-3. ✅ Replaces `<ACCOUNT_ID>` in `kustomization.yaml`
-4. ✅ Sets environment (dev/prod) in `eks-external-secrets.yaml`
-5. ✅ Validates Kustomize build
-6. ✅ Prompts for deployment confirmation
-7. ✅ Deploys with `kubectl apply -k .`
-
-**Time:** ~2 minutes
-
-**Verify deployment (via Bastion):**
-
-**⚠️ IMPORTANT:** You must SSH to bastion first, then run kubectl commands:
+Edit [helm/payflow/values-dev.yaml](helm/payflow/values-dev.yaml) — update the `ingress.wafArn` field with the output value, then:
 
 ```bash
-# SSH to bastion
-ssh -i ~/.ssh/payflow-bastion-key.pem ec2-user@<bastion-ip>
-
-# Check all pods are running
-kubectl get pods -n payflow
-
-# Check services
-kubectl get svc -n payflow
-
-# Check API Gateway logs
-kubectl logs -n payflow deployment/api-gateway -f
-
-# Test health endpoint (port-forward from bastion)
-kubectl port-forward -n payflow svc/api-gateway 3000:3000
-# In another terminal on bastion:
-curl http://localhost:3000/health
+git add helm/payflow/values-dev.yaml
+git commit -m "update WAF ARN for current spinup"
+git push
 ```
 
-**Verify nodes via SSM Session Manager:**
+ArgoCD will auto-sync the ingress within ~3 minutes.
+
+### Step B — Webhook: generate secret and store in Secrets Manager
+
+Run these from the **bastion** (SSM session):
+
 ```bash
-# Get node instance IDs
-aws ec2 describe-instances \
-  --filters "Name=tag:kubernetes.io/cluster/payflow-eks-cluster,Values=owned" \
-  --query 'Reservations[*].Instances[*].[InstanceId,PrivateIpAddress,State.Name]' \
-  --output table
-
-# Connect to a node
-aws ssm start-session --target <instance-id>
-
-# Verify node is healthy
-sudo systemctl status kubelet
-sudo journalctl -u kubelet -n 50
+aws ssm start-session --target <bastion-instance-id> --region us-east-1
 ```
+
+On the bastion:
+
+```bash
+# Generate a new webhook secret
+WEBHOOK_SECRET=$(openssl rand -hex 32)
+echo "Your webhook secret: $WEBHOOK_SECRET"
+# Save this value — you need it in Step C
+
+# Store in Secrets Manager
+aws secretsmanager update-secret \
+  --secret-id "payflow/dev/github-webhook-secret" \
+  --secret-string "$WEBHOOK_SECRET" \
+  --region us-east-1
+```
+
+### Step C — Register the GitHub webhook
+
+Get the webhook URL first:
+
+```bash
+# From your local machine
+cd terraform/aws/spoke-vpc-eks
+terraform output -raw argocd_webhook_url
+```
+
+Then register the webhook (replace placeholders):
+
+```bash
+gh api repos/Eweka01/payflow-wallet/hooks \
+  -f name=web \
+  -f "config[url]=<WEBHOOK_URL_FROM_ABOVE>/webhook" \
+  -f "config[content_type]=json" \
+  -f "config[secret]=<WEBHOOK_SECRET_FROM_STEP_B>" \
+  -f "events[]=push" \
+  -F "active=true"
+```
+
+**Important:** The API Gateway URL changes every spinup. Check if a webhook already exists first:
+```bash
+gh api repos/Eweka01/payflow-wallet/hooks --jq '.[].config.url'
+```
+If there's an old Lambda URL, delete it: `gh api repos/Eweka01/payflow-wallet/hooks/<id> -X DELETE`
+
+### Step D — ArgoCD token (enables Lambda → ArgoCD sync)
+
+On the **bastion**, open an SSM port-forward to the ArgoCD NLB:
+
+```bash
+# Local machine — get the NLB hostname first
+aws ssm start-session --target <bastion-instance-id> --region us-east-1
+kubectl get svc argocd-server -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+# Copy the hostname, then exit
+exit
+```
+
+Then from your local machine, open the tunnel:
+
+```bash
+aws ssm start-session \
+  --target <bastion-instance-id> \
+  --region us-east-1 \
+  --document-name AWS-StartPortForwardingSessionToRemoteHost \
+  --parameters "{\"host\":[\"<ARGOCD_NLB_HOSTNAME>\"],\"portNumber\":[\"443\"],\"localPortNumber\":[\"8080\"]}"
+```
+
+Open `https://localhost:8080` in your browser. Login as `admin` with the password from `setup-cluster.sh` output.
+
+**Enable apiKey capability and generate token:**
+
+```bash
+# On the bastion
+aws ssm start-session --target <bastion-instance-id> --region us-east-1
+kubectl patch configmap argocd-cm -n argocd --type merge \
+  -p '{"data":{"accounts.admin":"login,apiKey"}}'
+```
+
+Then in the ArgoCD UI: **Settings → Accounts → admin → Generate New Token**. Copy the token.
+
+**Store token and NLB URL in Secrets Manager (from bastion):**
+
+```bash
+aws secretsmanager update-secret \
+  --secret-id "payflow/dev/argocd-token" \
+  --secret-string "<YOUR_ARGOCD_TOKEN>" \
+  --region us-east-1
+
+aws secretsmanager update-secret \
+  --secret-id "payflow/dev/argocd-internal-url" \
+  --secret-string "https://<ARGOCD_NLB_HOSTNAME>" \
+  --region us-east-1
+```
+
+**Verify the full webhook chain:** Make a small change, push to main, and confirm the webhook delivers a 200 and ArgoCD syncs within 30 seconds.
 
 ---
 
 ## Access Your Application
 
-**⚠️ IMPORTANT:** All kubectl commands must be run from the bastion host since EKS endpoint is private.
-
-### Option 1: Port Forward via Bastion (Quick Testing)
+The ALB URL is public-facing — access it directly from your browser:
 
 ```bash
-# SSH to bastion
-ssh -i ~/.ssh/payflow-bastion-key.pem ec2-user@<bastion-ip>
-
-# Forward API Gateway (on bastion)
-kubectl port-forward -n payflow svc/api-gateway 3000:3000
-
-# In another terminal, create SSH tunnel from your local machine
-ssh -i ~/.ssh/payflow-bastion-key.pem -L 3000:localhost:3000 ec2-user@<bastion-ip> -N
-
-# Now access from your local browser
-open http://localhost:3000/health
-```
-
-### Option 2: Via Ingress (Production)
-
-```bash
-# SSH to bastion
-ssh -i ~/.ssh/payflow-bastion-key.pem ec2-user@<bastion-ip>
-
-# Get ingress URL
+# Get the ALB URL (from bastion)
 kubectl get ingress -n payflow
-
-# Access via ALB URL (from AWS Load Balancer Controller)
-# The ALB is public-facing, so you can access it directly from your browser
+# Or:
+kubectl get svc -n payflow -l app=frontend
 ```
 
 ---
@@ -521,12 +529,11 @@ kubectl get ingress -n payflow
 **Solution:** Wait for EKS cluster to be fully ready (all control plane components), then apply CNI addon.
 
 ### Issue: "Error: Nodes not joining cluster"
-**Solution:** Check that VPC CNI addon is installed and running (via bastion):
+**Solution:** Check that VPC CNI addon is installed and running (via bastion SSM):
 ```bash
-# SSH to bastion first
-ssh -i ~/.ssh/payflow-bastion-key.pem ec2-user@<bastion-ip>
-
-# Then check CNI
+aws ssm start-session --target <bastion-instance-id> --region us-east-1
+# On bastion:
+aws eks update-kubeconfig --name payflow-eks-cluster --region us-east-1
 kubectl get pods -n kube-system -l k8s-app=aws-node
 ```
 
@@ -547,15 +554,10 @@ sudo journalctl -u kubelet -n 100
 ```
 
 ### Issue: "Image tag 'latest' already exists... cannot be overwritten because the tag is immutable"
-**Solution:** ECR has tag immutability enabled. Push with a **new tag** (e.g. `v1` or a git SHA), then deploy with that tag:
-```bash
-export TAG=v1   # or: TAG=$(git rev-parse --short HEAD)
-# Build/push each service with :${TAG} (see Step 6 "Build and push images" above)
-cd k8s/overlays/eks && IMAGE_TAG=$TAG ./deploy.sh
-```
+**Solution:** ECR tags are immutable. CI pushes with a timestamped SHA tag — never `:latest`. If you see this, the CI pipeline is trying to overwrite a tag. Check the ci.yml `prepare` job; it generates a unique tag like `20260519020105-abc1234`.
 
 ### Issue: "Error: ImagePullBackOff"
-**Solution:** Run `./deploy.sh` script which automatically replaces `<ACCOUNT_ID>` placeholder.
+**Solution:** The image tag in `global.imageTag` doesn't exist in ECR. Check Image Updater logs: `kubectl logs -n argocd -l app.kubernetes.io/name=argocd-image-updater --tail=50`.
 
 ### Issue: "Error: Null value found in list" (managed-services security groups)
 **Solution:** RDS/ElastiCache/MQ security groups need the EKS node security group ID. Set **one** of:
@@ -607,7 +609,7 @@ kubectl get pods -n payflow -w
 The External Secrets ServiceAccount must have `eks.amazonaws.com/role-arn` set so ESO can read Secrets Manager. It is **set automatically** in two cases:
 
 1. **Terraform bootstrap-node** — When the cluster is created, the bootstrap instance installs ESO via Helm with `--set serviceAccount.annotations.eks.amazonaws.com/role-arn=$EXTERNAL_SECRETS_IRSA_ARN`.
-2. **deploy.sh** — When you run `k8s/overlays/eks/deploy.sh`, it gets the IRSA ARN from `terraform output` and injects it into the bastion script so the Helm upgrade keeps the annotation.
+2. **setup-cluster.sh** — The bastion script installs ESO with `--set serviceAccount.annotations.eks\.amazonaws\.com/role-arn=<IRSA_ARN>` so the annotation is always applied.
 
 **Verify** (on bastion):
 ```bash
@@ -644,38 +646,35 @@ kubectl top nodes
 
 | Phase | Time | Notes |
 |-------|------|-------|
-| Bootstrap | 2 min | One-time setup |
-| Hub VPC | 3 min | Quick |
-| EKS VPC & Cluster | 40-50 min | Use targets in order |
-| Managed Services | 25-35 min | RDS 15-20+ min; set tfstate_bucket or eks_node_sg |
-| Bastion | 3 min | Required for kubectl (EKS private) |
-| Application | 2 min | Fast with script |
-| **Total** | **~75-95 min** | First deployment |
+| spinup.sh | ~90 min | Hub VPC + EKS + Managed services + Bastion + FinOps |
+| setup-cluster.sh | ~15 min | ArgoCD + ESO + ALB Controller + Image Updater |
+| Post-setup (Steps A–D) | ~10 min | WAF ARN, webhook, ArgoCD token |
+| **Total** | **~115 min** | First deployment |
 
-Subsequent deployments are faster (infrastructure already exists).
+Subsequent deployments (teardown + respinup): same time. setup-cluster.sh with `--skip-argocd --skip-eso` saves ~5 min if those are already installed.
 
 ---
 
 ## Next Steps
 
 - ✅ Infrastructure is running!
-- 📖 Read [Deployment Guide](docs/DEPLOYMENT.md) for rollback procedures
-- 📖 Read [Runbook](docs/RUNBOOK.md) for monitoring and debugging
-- 🌐 Add Cloudflare DNS/CDN (see earlier conversation)
+- Complete **Post-Setup Steps A–D** above if not done
+- ArgoCD auto-syncs on every push to `main` via Lambda webhook
+- ArgoCD Image Updater polls ECR every 2 minutes and updates `global.imageTag` automatically
 
 ---
 
 ## Quick Reference Commands
 
-**⚠️ REMEMBER:** All kubectl commands must be run from bastion host (EKS endpoint is private).
+**All kubectl commands run from bastion via SSM — no SSH keys.**
 
-### Access via Bastion
+### Access via Bastion (SSM)
 
 ```bash
-# SSH to bastion
-ssh -i ~/.ssh/payflow-bastion-key.pem ec2-user@<bastion-ip>
+# Connect to bastion
+aws ssm start-session --target <bastion-instance-id> --region us-east-1
 
-# Configure kubectl (on bastion)
+# Configure kubectl (on bastion, ubuntu user)
 aws eks update-kubeconfig --name payflow-eks-cluster --region us-east-1
 
 # Check cluster status
@@ -695,34 +694,53 @@ kubectl port-forward -n payflow svc/api-gateway 3000:3000
 kubectl port-forward -n payflow svc/frontend 80:80
 ```
 
-### Access Nodes via SSM Session Manager
+### Access EKS Nodes via SSM
 
 ```bash
 # List all EKS nodes
 aws ec2 describe-instances \
   --filters "Name=tag:kubernetes.io/cluster/payflow-eks-cluster,Values=owned" \
-  --query 'Reservations[*].Instances[*].[InstanceId,PrivateIpAddress,State.Name,LaunchTime]' \
+  --query 'Reservations[*].Instances[*].[InstanceId,PrivateIpAddress,State.Name]' \
   --output table
 
-# Connect to a node
-aws ssm start-session --target <instance-id>
-
-# Once connected, check node status
+# Connect to a node directly (for node-level debug — no kubectl here)
+aws ssm start-session --target <node-instance-id> --region us-east-1
 sudo systemctl status kubelet
 sudo journalctl -u kubelet -n 100
-kubectl get nodes  # If kubectl is installed on node
+```
+
+### ArgoCD (VPC-only NLB — SSM tunnel required)
+
+```bash
+# Open tunnel from local machine
+aws ssm start-session \
+  --target <bastion-instance-id> \
+  --region us-east-1 \
+  --document-name AWS-StartPortForwardingSessionToRemoteHost \
+  --parameters "{\"host\":[\"<ARGOCD_NLB_HOSTNAME>\"],\"portNumber\":[\"443\"],\"localPortNumber\":[\"8080\"]}"
+# Browser: https://localhost:8080  (admin / <password from setup-cluster.sh output>)
+```
+
+### Grafana (VPC-only — SSM tunnel required)
+
+```bash
+aws ssm start-session \
+  --target <bastion-instance-id> \
+  --region us-east-1 \
+  --document-name AWS-StartPortForwardingSessionToRemoteHost \
+  --parameters "{\"host\":[\"<GRAFANA_SVC_DNS>\"],\"portNumber\":[\"80\"],\"localPortNumber\":[\"3000\"]}"
+# Browser: http://localhost:3000  (admin / prom-operator)
 ```
 
 ### Terraform Commands
 
 ```bash
-# Check Terraform state
-cd terraform/aws/spoke-vpc-eks
-terraform output
-terraform state list
+# Key outputs
+cd terraform/aws/spoke-vpc-eks && terraform workspace select dev
+terraform output -raw waf_web_acl_arn
+terraform output -raw argocd_webhook_url
 
-# Get bastion IP
-cd terraform/aws/bastion
-terraform output
+cd terraform/aws/bastion && terraform workspace select dev
+terraform output ssm_connect_command
 ```
 
