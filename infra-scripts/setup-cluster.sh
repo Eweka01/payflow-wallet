@@ -472,8 +472,15 @@ if [ -n "\$LATEST_TAG" ] && [ "\$LATEST_TAG" != "None" ]; then
     || warn "Could not patch global.imageTag — ArgoCD may not be ready yet"
   success "global.imageTag set to \$LATEST_TAG"
 else
-  warn "No ECR images found yet — global.imageTag not set."
-  warn "Push images via CI first, then Image Updater will set the tag automatically."
+  warn "No ECR images found yet — global.imageTag NOT set."
+  warn "Image Updater CANNOT bootstrap the tag from zero running pods (chicken-and-egg):"
+  warn "  it derives the tracked image from a running container, but no container can"
+  warn "  start until the tag is set. Result: the first sync deadlocks on the migration hook."
+  warn "FIX — run CI BEFORE setup-cluster on a fresh spinup so ECR has images:"
+  warn "  correct order:  spinup.sh  ->  push to main (CI builds images)  ->  setup-cluster.sh"
+  warn "RECOVER (if you already ran setup-cluster with empty ECR): after CI is green, run:"
+  warn "  kubectl patch application payflow -n argocd --type merge \\"
+  warn "    -p '{\"spec\":{\"source\":{\"helm\":{\"parameters\":[{\"name\":\"global.imageTag\",\"value\":\"<LATEST_ECR_TAG>\"}]}}}}'"
 fi
 
 # ── Step 7 — Wait for ArgoCD sync ────────────────────────────────────────────
