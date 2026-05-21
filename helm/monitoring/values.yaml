@@ -84,10 +84,12 @@ prometheus:
           static_configs:
             - targets: ['rabbitmq-exporter.payflow.svc.cluster.local:9419']
           metric_relabel_configs:
-            # Drop metrics for queues we don't track; metrics with no queue label pass through
+            # Keep: empty queue label (overview/connection/channel metrics)
+            # Keep: transaction.* and notification.* queues
+            # Drop: any other non-empty queue value
             - source_labels: [queue]
-              regex: '^(?!transaction|notification).+'
-              action: drop
+              regex: '^(transaction.*|notification.*|)$'
+              action: keep
 
         - job_name: 'kube-state-metrics'
           static_configs:
