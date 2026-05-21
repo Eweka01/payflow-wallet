@@ -46,7 +46,7 @@ spec:
                   key: RABBIT_ENDPOINT
             - name: RABBIT_URL
               value: "https://$(RABBIT_ENDPOINT):15671"
-            - name: SKIP_VERIFY
+            - name: INSECURE_SKIP_VERIFY
               value: "true"
             - name: RABBIT_EXPORTERS
               value: "overview,exchange,node,queue,connections"
