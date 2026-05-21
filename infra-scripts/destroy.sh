@@ -435,8 +435,23 @@ cleanup_k8s_elbs() {
     delete_sg "$sg"
   done
 
-  if [ -z "$classic_elbs$v2_arns$k8s_sgs" ]; then
-    log "No Kubernetes ELBs or SGs found."
+  # ALB controller target groups are NOT deleted when the ALB is removed and
+  # are NOT in Terraform state — they linger pointing at the (soon-to-be-deleted)
+  # VPC and accumulate across spinup/teardown cycles. Delete every target group
+  # the payflow ALB controller created (named k8s-payflow-*). They can only be
+  # deleted once their load balancer is gone, which the steps above ensure.
+  local k8s_tgs
+  k8s_tgs=$(aws elbv2 describe-target-groups --region "$REGION" \
+    --query "TargetGroups[?starts_with(TargetGroupName, 'k8s-payflow-')].TargetGroupArn" \
+    --output text 2>/dev/null || true)
+  for tg in $k8s_tgs; do
+    log "Deleting orphaned target group: $(basename "$(dirname "$tg")")"
+    aws elbv2 delete-target-group --target-group-arn "$tg" --region "$REGION" 2>/dev/null \
+      || warn "Could not delete target group $tg yet"
+  done
+
+  if [ -z "$classic_elbs$v2_arns$k8s_sgs$k8s_tgs" ]; then
+    log "No Kubernetes ELBs, SGs, or target groups found."
   fi
   success "Kubernetes ELB cleanup complete."
 }
