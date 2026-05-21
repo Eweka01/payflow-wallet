@@ -82,15 +82,16 @@ prometheus:
           scrape_interval: 30s
           scrape_timeout: 25s
           static_configs:
-            - targets: ['rabbitmq.payflow.svc.cluster.local:15692']
+            - targets: ['rabbitmq-exporter.payflow.svc.cluster.local:9419']
           metric_relabel_configs:
+            # Drop metrics for queues we don't track; metrics with no queue label pass through
             - source_labels: [queue]
-              regex: 'transaction.*|notification.*'
-              action: keep
+              regex: '^(?!transaction|notification).+'
+              action: drop
 
         - job_name: 'kube-state-metrics'
           static_configs:
-            - targets: ['kube-state-metrics.kube-system.svc.cluster.local:8080']
+            - targets: ['payflow-monitoring-kube-state-metrics.monitoring.svc.cluster.local:8080']
           metric_relabel_configs:
             - source_labels: [namespace]
               regex: 'payflow|monitoring'

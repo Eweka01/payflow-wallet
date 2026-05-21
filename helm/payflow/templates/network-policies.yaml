@@ -280,6 +280,7 @@ spec:
       - notification-service
       - postgres-exporter
       - redis-exporter
+      - rabbitmq-exporter
   policyTypes:
   - Ingress
   ingress:
@@ -305,6 +306,8 @@ spec:
       port: 9187  # postgres-exporter
     - protocol: TCP
       port: 9121  # redis-exporter
+    - protocol: TCP
+      port: 9419  # rabbitmq-exporter
 ---
 # postgres-exporter egress -> RDS + DNS
 apiVersion: networking.k8s.io/v1
@@ -383,6 +386,37 @@ spec:
       port: 6379
     - protocol: TCP
       port: 6380
+---
+# rabbitmq-exporter egress -> Amazon MQ management port + DNS
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rabbitmq-exporter-allow-egress
+  namespace: payflow
+  labels:
+    {{- include "payflow.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: rabbitmq-exporter
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  - to:
+    - ipBlock:
+        cidr: 10.0.0.0/8
+    ports:
+    - protocol: TCP
+      port: 15671
 ---
 # CronJob pods (transaction-timeout-handler) egress -> RDS + DNS
 apiVersion: networking.k8s.io/v1
