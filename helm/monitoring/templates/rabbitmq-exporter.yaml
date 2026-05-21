@@ -22,7 +22,7 @@ spec:
     spec:
       containers:
         - name: rabbitmq-exporter
-          image: kbudde/rabbitmq-exporter:v1.0.0-RC19
+          image: kbudde/rabbitmq-exporter:v0.29.0
           securityContext:
             allowPrivilegeEscalation: false
           ports:
