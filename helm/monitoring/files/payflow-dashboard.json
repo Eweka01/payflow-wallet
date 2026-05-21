@@ -769,18 +769,18 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(transactions_total{status=\"completed\",type=\"transfer\"}[2m]))",
-          "legendFormat": "Completed",
+          "expr": "sum(rate(http_requests_total{job=\"transaction-service\",status_code=~\"2..\"}[2m]))",
+          "legendFormat": "Completed (2xx)",
           "refId": "A"
         },
         {
-          "expr": "sum(rate(transactions_total{status=\"failed\",type=\"transfer\"}[2m]))",
-          "legendFormat": "Failed",
+          "expr": "sum(rate(http_requests_total{job=\"transaction-service\",status_code=~\"4..|5..\"}[2m]))",
+          "legendFormat": "Failed (4xx/5xx)",
           "refId": "B"
         },
         {
-          "expr": "sum(rate(transactions_total{status=\"pending\",type=\"transfer\"}[2m]))",
-          "legendFormat": "\u23f3 Pending (created)",
+          "expr": "sum(rate(http_requests_total{job=\"transaction-service\"}[2m]))",
+          "legendFormat": "Total",
           "refId": "C"
         }
       ],
@@ -861,13 +861,13 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.95, sum(rate(transaction_duration_seconds_bucket{status=\"completed\"}[5m])) by (le))",
-          "legendFormat": "p95 (completed)",
+          "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job=\"transaction-service\"}[5m])) by (le))",
+          "legendFormat": "p95 latency",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.50, sum(rate(transaction_duration_seconds_bucket{status=\"completed\"}[5m])) by (le))",
-          "legendFormat": "p50 (completed)",
+          "expr": "histogram_quantile(0.50, sum(rate(http_request_duration_seconds_bucket{job=\"transaction-service\"}[5m])) by (le))",
+          "legendFormat": "p50 latency",
           "refId": "B"
         }
       ],
