@@ -479,7 +479,7 @@ else
   warn "FIX — run CI BEFORE setup-cluster on a fresh spinup so ECR has images:"
   warn "  correct order:  spinup.sh  ->  push to main (CI builds images)  ->  setup-cluster.sh"
   warn "RECOVER (if you already ran setup-cluster with empty ECR): after CI is green, run:"
-  warn "  kubectl patch application payflow -n argocd --type merge \\"
+  warn "  kubectl patch application payflow -n argocd --type merge \\\\"
   warn "    -p '{\"spec\":{\"source\":{\"helm\":{\"parameters\":[{\"name\":\"global.imageTag\",\"value\":\"<LATEST_ECR_TAG>\"}]}}}}'"
 fi
 
