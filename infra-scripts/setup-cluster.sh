@@ -148,6 +148,46 @@ MON_MANIFEST=$(cat "$REPO_ROOT/helm/argocd/monitoring-application.yaml") \
   || error "helm/argocd/monitoring-application.yaml not found in $REPO_ROOT"
 success "ArgoCD manifests loaded"
 
+# ── ROOT-CAUSE FIX: detect ECR tag + bake it into the Application manifest ─────
+# ArgoCD's automated sync fires the instant the Application is applied. If
+# global.imageTag isn't ALREADY set at that moment, it renders with the
+# values.yaml default and the db-migration PreSync hook is created pulling a
+# nonexistent tag -> ImagePullBackOff -> stuck argocd hook-finalizer -> ArgoCD
+# caches the bad render and keeps recreating it. That cascade is what forced the
+# manual finalizer-removal + hard-refresh recovery on past spinups.
+#
+# Fix: (1) hard-fail if ECR has no images yet (enforces spinup -> CI -> setup
+# order instead of just warning), and (2) inject global.imageTag into the
+# manifest's helm.parameters NOW so the very first reconcile uses the right tag.
+log "Detecting latest image tag from ECR (api-gateway)..."
+LATEST_TAG=$(aws ecr describe-images \
+  --repository-name "${CLUSTER_NAME}/api-gateway" \
+  --region "$REGION" \
+  --query 'sort_by(imageDetails,&imagePushedAt)[-1].imageTags[0]' \
+  --output text 2>/dev/null || echo "")
+if [ -z "$LATEST_TAG" ] || [ "$LATEST_TAG" = "None" ]; then
+  error "ECR has no api-gateway image yet. Correct order: spinup.sh -> push to main (let CI build+push images) -> setup-cluster.sh. Wait for CI to finish, then re-run."
+fi
+# The db-migration PreSync hook pulls db-migrations:<tag> first — verify it exists.
+aws ecr describe-images \
+  --repository-name "${CLUSTER_NAME}/db-migrations" \
+  --image-ids imageTag="$LATEST_TAG" \
+  --region "$REGION" >/dev/null 2>&1 \
+  || error "db-migrations:$LATEST_TAG missing in ECR (CI may still be building). Wait for CI to finish, then re-run."
+success "ECR image tag: $LATEST_TAG"
+
+APP_MANIFEST=$(printf '%s\n' "$APP_MANIFEST" | python3 -c '
+import sys
+m = sys.stdin.read()
+tag = sys.argv[1]
+inject = "      parameters:\n        - name: global.imageTag\n          value: \"%s\"\n" % tag
+m = m.replace("        - values-dev.yaml\n", "        - values-dev.yaml\n" + inject, 1)
+sys.stdout.write(m)
+' "$LATEST_TAG") || error "Failed to inject imageTag into Application manifest"
+printf '%s\n' "$APP_MANIFEST" | grep -q "global.imageTag" \
+  || error "imageTag injection failed — 'global.imageTag' not found in manifest"
+success "global.imageTag=$LATEST_TAG baked into Application manifest"
+
 # Pre-encode ECR creds script as base64 so the unquoted BASTION_EOF heredoc
 # below can embed a literal b64 string instead of expanding $(aws ecr ...) locally.
 # The bastion decodes this at runtime, producing a dynamic script that calls
