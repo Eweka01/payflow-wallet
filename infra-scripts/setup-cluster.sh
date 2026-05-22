@@ -119,6 +119,28 @@ aws iam get-role --role-name payflow-eks-cluster-external-secrets-irsa \
   || error "ESO IRSA role not found. Run spinup.sh first."
 success "ESO IRSA: $ESO_ROLE_ARN"
 
+# ── Auto-update WAF ARN in values-dev.yaml ────────────────────────────────────
+# WAF web ACL is recreated on every spinup with a new ARN. If values-dev.yaml
+# still has the previous spinup's ARN the ALB controller fails to associate it
+# and ArgoCD blocks waiting for a healthy Ingress, preventing app pods from starting.
+log "Reading WAF ARN from Terraform output..."
+WAF_ARN=$(terraform -chdir="$REPO_ROOT/terraform/aws/spoke-vpc-eks" output -raw waf_web_acl_arn 2>/dev/null || echo "")
+[ -n "$WAF_ARN" ] || error "Could not read waf_web_acl_arn from Terraform. Run spinup.sh first."
+success "WAF ARN: $WAF_ARN"
+
+CURRENT_WAF=$(grep 'wafArn:' "$REPO_ROOT/helm/payflow/values-dev.yaml" | sed 's/.*wafArn: *"\(.*\)"/\1/')
+if [ "$CURRENT_WAF" != "$WAF_ARN" ]; then
+  log "Updating WAF ARN in values-dev.yaml ($CURRENT_WAF → $WAF_ARN)..."
+  sed -i.bak "s|wafArn:.*|wafArn: \"$WAF_ARN\"|" "$REPO_ROOT/helm/payflow/values-dev.yaml" \
+    && rm -f "$REPO_ROOT/helm/payflow/values-dev.yaml.bak"
+  git -C "$REPO_ROOT" add helm/payflow/values-dev.yaml
+  git -C "$REPO_ROOT" commit -m "fix: update WAF ARN for new spinup"
+  git -C "$REPO_ROOT" push
+  success "WAF ARN updated and pushed"
+else
+  success "WAF ARN already current — no update needed"
+fi
+
 # Read ArgoCD Application manifests from local repo
 APP_MANIFEST=$(cat "$REPO_ROOT/helm/argocd/application.yaml") \
   || error "helm/argocd/application.yaml not found in $REPO_ROOT"
