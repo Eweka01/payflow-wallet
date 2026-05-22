@@ -20,5 +20,5 @@ externalSecrets:
 #   Then update this file with those values and commit.
 ingress:
   enabled: true
-  wafArn: "arn:aws:wafv2:us-east-1:470439679607:regional/webacl/payflow-dev-waf/63b97aa7-cc10-42d6-a0f1-9c7fc805cf73"
+  wafArn: "arn:aws:wafv2:us-east-1:470439679607:regional/webacl/payflow-dev-waf/6b0928f5-e234-4785-95b7-ee47982ccbef"
   certificateArn: ""  # No ACM cert provisioned — ALB serves HTTP only

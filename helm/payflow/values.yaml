@@ -21,7 +21,7 @@ global:
   environment: dev
   registry: 470439679607.dkr.ecr.us-east-1.amazonaws.com
   imagePrefix: payflow-eks-cluster
-  imageTag: latest
+  imageTag: placeholder  # overridden by ArgoCD parameter; "placeholder" prevents accidental :latest pulls
   awsRegion: us-east-1
   dbName: payflow
 
